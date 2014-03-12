@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # ====================================================================
 # Copyright (c) Hannes Schweizer <hschweizer@gmx.net>
 #
@@ -19,22 +19,13 @@ import gentoo.ui
 import pylon.base
 
 class ui(gentoo.ui.ui):
-    def cleanup(self):
-        super(ui, self).cleanup(self.opts.type)
+    def __init__(self, owner):
+        super().__init__(owner)
 
-    def configure(self):
-        super(ui, self).configure()
-
-        self.parser.add_option('-t','--type', type='string',
-                               help=self.extract_doc_strings())
-        self.parser.add_option('-o','--options', type='string',
-                               default='',
-                               help='add additional emerge option string')
-
-    def validate(self):
-        super(ui, self).validate()
-        if not self.opts.type:
-            self.opts.type = 'quick_report'
+        self.parser_common.add_argument('-o','--options',
+                                        default='',
+                                        help='add additional emerge option string')
+        self.init_op_parser()
 
 class adm_portage(pylon.base.base):
     'container script for all portage related admin tasks'
@@ -42,12 +33,12 @@ class adm_portage(pylon.base.base):
     def run_core(self):
         import datetime
         t1 = datetime.datetime.now()
-        getattr(self, self.__class__.__name__ + '_' + self.ui.opts.type)()
-        self.ui.info(self.ui.opts.type + ' took ' + str(datetime.datetime.now() - t1) + ' to complete...')
+        getattr(self, self.__class__.__name__ + '_' + self.ui.args.op)()
+        self.ui.info(self.ui.args.op + ' took ' + str(datetime.datetime.now() - t1) + ' to complete...')
 
-    def adm_portage_quick_report(self):
+    def adm_portage_qr(self):
         'generate quick emerge report on console'
-        self.dispatch(emerge_world + emerge_pretend + ' ' + self.ui.opts.options,
+        self.dispatch(emerge_world + emerge_pretend + ' ' + self.ui.args.options,
                       output='nopipes')
 
     def adm_portage_report(self):
@@ -77,7 +68,7 @@ class adm_portage(pylon.base.base):
         self.ui.info('Checking for updates...')
         # =========================================================
         try:
-            self.dispatch(emerge_world + emerge_pretend + ' ' + self.ui.opts.options)
+            self.dispatch(emerge_world + emerge_pretend + ' ' + self.ui.args.options)
         except self.exc_class:
             pass
 
@@ -140,13 +131,13 @@ class adm_portage(pylon.base.base):
         self.ui.info('Checking for updates...')
         # =========================================================
         #try:
-        self.dispatch(emerge_world + ' --keep-going ' + self.ui.opts.options,
+        self.dispatch(emerge_world + ' --keep-going ' + self.ui.args.options,
                       output='nopipes')
         #except self.exc_class:
         #    for it in range(1,10):
         #        self.ui.info('emerge world has failed ' + str(it) + ' time(s), trying to restart with --skipfirst...')
         #        try:
-        #            self.dispatch(emerge_world + ' --skipfirst ' + self.ui.opts.options,
+        #            self.dispatch(emerge_world + ' --skipfirst ' + self.ui.args.options,
         #                          output='nopipes')
         #        except self.exc_class:
         #            continue

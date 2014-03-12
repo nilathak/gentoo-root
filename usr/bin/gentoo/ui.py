@@ -7,6 +7,8 @@
 # any later version.
 # ====================================================================
 import os
+import re
+import socket
 import pylon.ui
 
 class ui(pylon.ui.ui):
@@ -22,13 +24,12 @@ class ui(pylon.ui.ui):
         return self._report_stream
 
     def __init__(self, owner):
-        super(ui, self).__init__(owner)
+        super().__init__(owner)
 
         # add handler for mail logging
-        # FIXME replace StringIO module with io module
-        import StringIO
+        import io
         import logging
-        self._report_stream = StringIO.StringIO()
+        self._report_stream = io.StringIO()
         self._handler['mail'] = logging.StreamHandler(self._report_stream)
         self._handler['mail'].setFormatter(self.formatter['default'])
         self.logger.addHandler(self._handler['mail'])
@@ -36,49 +37,56 @@ class ui(pylon.ui.ui):
         # hooray, more emails (alias needs to be set)...
         self._message_server = 'root@localhost'
 
-    def configure(self):
-        super(ui, self).configure()
-        self.parser.add_option('--hostname', action='store',
-                               help='force specific hostname')
-        self.parser.add_option('-r', '--report', action='store_true',
-                               help='generate additional mail report (def: root@localhost)')
+        self.parser.add_argument('--hostname', action='store', default=socket.gethostname(),
+                                 help='force specific hostname')
+        self.parser.add_argument('--mail', action='store_true',
+                                 help='generate additional mail report (def: root@localhost)')
 
-    def validate(self):
-        import socket
-        self._hostname = socket.gethostname()
-        # force hostname
-        if self.opts.hostname:
-            self._hostname = self.opts.hostname
+        # when using operations:
+        # - use self.parser_common from here on instead of self.parser
+        # - do not forget to run init_op_parser after all parser_common statements in __init__
+        import argparse
+        self.parser_common = argparse.ArgumentParser(conflict_handler='resolve',
+                                                     parents=[self.parser])
+
+    def init_op_parser(self):
+        # define operation subparsers with common options if class methods
+        # with specific prefix are present
+        ops_pattern = re.compile('^%s_(.*)' % (self._owner.__class__.__name__))
+        ops = [x for x in map(ops_pattern.match, dir(self._owner)) if x != None]
+        if ops:
+            subparsers = self.parser.add_subparsers(title='operations', dest='op')
+            for op in ops:
+                setattr(self, 'parser_' + op.group(1),
+                        subparsers.add_parser(op.group(1),
+                                              conflict_handler='resolve',
+                                              parents=[self.parser_common],
+                                              description=getattr(self._owner, op.string).__doc__,
+                                              help=getattr(self._owner, op.string).__doc__))
+
+    def setup(self):
+        super().setup()
+
+        # support forcing of hostname
+        self._hostname = self.args.hostname
         self._fqdn = socket.getfqdn(self._hostname)
 
-    def cleanup(self, subject='report'):
+        self._report_subject = 'report'
+        if hasattr(self.args, 'op'):
+            self._report_subject = self.args.op
+
+    def cleanup(self):
         'send optional email with all output to global message server'
-        if (self.opts.report and
-            not self.opts.dry_run and
+        if (self.args.mail and
+            not self.args.dry_run and
             len(self.report_stream.getvalue()) > 0):
             import email.MIMEText
             import smtplib
             m = email.MIMEText.MIMEText(self.report_stream.getvalue())
             m['From'] = self._owner.__class__.__name__ + '@' + self.fqdn
             m['To'] = self._message_server
-            m['Subject'] = subject
+            m['Subject'] = self._report_subject
             s = smtplib.SMTP(self._message_server.split('@')[1])
             s.set_debuglevel(0)
             s.sendmail(m['From'], m['To'], m.as_string())
             s.quit()
-
-    def extract_doc_strings(self, find_pattern=None, replace_lambda=lambda x: ''):
-        '''generate help strings for optparse from doc strings of prefixed functions.
-           To be considered, a function name has to start with the respective class
-           name followed by an underscore.'''
-        if find_pattern == None:
-            import re
-            find_pattern = re.compile('^' + self._owner.__class__.__name__ + '_')
-        def add_doc(x):
-            doc = '#' + find_pattern.sub(replace_lambda(x),
-                x.string)
-            if getattr(self._owner, x.string).__doc__:
-                doc += os.linesep + self._help_wrapper(getattr(self._owner, x.string).__doc__)
-            return doc
-        matches = [x for x in map(find_pattern.match, dir(self._owner)) if x != None]
-        return os.linesep.join(map(add_doc, matches))

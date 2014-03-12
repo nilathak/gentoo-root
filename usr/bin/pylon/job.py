@@ -74,11 +74,8 @@ output:
         return self
 
     def join(self):
-        'join back to caller thread and propagate exception'
+        'join back to caller thread'
         self.thread.join()
-        if self.exc_info and self._blocking:
-            (type, val, tb) = self.exc_info
-            raise type, val, tb
 
     def exception_wrapper(self):
         try:
@@ -100,13 +97,13 @@ output:
             else:
                 self.exec_cmd()
         except Exception as e:
-            self._exc_info = sys.exc_info()
-
-            # print exception here to include correct thread info
-            if self._blocking:
-                pylon.base.reraise()
-            else:
+            # - save exception context to inform caller thread
+            # - print exception here to include correct thread info
+            if not self._blocking:
+                self._exc_info = sys.exc_info()
                 self.ui.excepthook(*self.exc_info)
+            else:
+                raise e
         finally:
             # reset the logger format if only Mainthread will be left
             if threading.active_count() <= 2:
@@ -118,15 +115,15 @@ output:
         self.ui.debug(self._cmd)
         self._stdout = []
         self._stderr = []
-        if not self.ui.opts.dry_run or self._passive:
+        if not self.ui.args.dry_run or self._passive:
 
             devnull = open(os.devnull, 'w')
             try:
 
                 # quiet switch takes precedence
-                if self.ui.opts.quiet > 1:
+                if self.ui.args.quiet > 1:
                     self._output = None
-                elif self.ui.opts.quiet > 0:
+                elif self.ui.args.quiet > 0:
                     # do not interfere with already configured None
                     if self._output:
                         self._output = 'stderr'
@@ -145,11 +142,35 @@ output:
 
                 # windows subprocess
                 if subprocess.mswindows:
-                    self.exec_cmd_win(stdin, stdout, stderr)
+                    self.ui.error('Windows platform not supported!')
 
-                # assume POSIX subprocess
+                # POSIX subprocess
                 else:
-                    self.exec_cmd_posix(stdin, stdout, stderr)
+                    self._proc = subprocess.Popen(self._cmd, shell=True,
+                                                  # always use bash
+                                                  executable='/bin/bash',
+                                                  stdin=stdin,
+                                                  stdout=stdout,
+                                                  stderr=stderr)
+
+                    while self._proc.poll() == None:
+                        (proc_stdout_b, proc_stderr_b) = self._proc.communicate(stdin)
+
+                        if proc_stdout_b:
+                            proc_stdout = proc_stdout_b.decode().rstrip(os.linesep).rsplit(os.linesep)
+                            self.stdout.extend(proc_stdout)
+                            if (self._output and
+                                (self._output == 'both' or
+                                 self._output == 'stdout')):
+                                [sys.stdout.write(self._prefix + l + os.linesep) for l in proc_stdout]
+
+                        if proc_stderr_b:
+                            proc_stderr = proc_stderr_b.decode().rstrip(os.linesep).rsplit(os.linesep)
+                            self.stderr.extend(proc_stderr)
+                            if (self._output and
+                                (self._output == 'both' or
+                                 self._output == 'stderr')):
+                                [sys.stderr.write(self._prefix + l + os.linesep) for l in proc_stderr]
 
                 # can be caught anyway if a subprocess does not abide
                 # to standard error codes
@@ -159,107 +180,3 @@ output:
             finally:
                 devnull.close()
                 self._ret_val = self._proc.returncode
-
-    def exec_cmd_posix(self, stdin, stdout, stderr):
-        'partly a reimplementation of Popen.communicate to allow a non blocking communication when using pipes.'
-        # fork it...
-        self._proc = subprocess.Popen(self._cmd, shell=True,
-                                     # always use bash
-                                     executable='/bin/bash',
-                                     stdin=stdin,
-                                     stdout=stdout,
-                                     stderr=stderr)
-
-        import select
-        write_set = []
-        read_set = []
-        if (not self._output or
-            self._output == 'both' or
-            self._output == 'stdout'):
-            read_set.append(self._proc.stdout)
-        if (not self._output or
-            self._output == 'both' or
-            self._output == 'stderr'):
-            read_set.append(self._proc.stderr)
-
-        while (read_set or write_set):
-            rlist, wlist, xlist = select.select(read_set, write_set, [])
-
-            proc_stdout = ''
-            if self._proc.stdout in rlist:
-                proc_stdout = self._proc.stdout.readline()
-                if proc_stdout == '':
-                    read_set.remove(self._proc.stdout)
-            proc_stderr = ''
-            if self._proc.stderr in rlist:
-                proc_stderr = self._proc.stderr.readline()
-                if proc_stderr == '':
-                    read_set.remove(self._proc.stderr)
-
-            # try to record everything regardless of self._output config
-            if proc_stderr != '':
-                # - saved as list of lines anyway, so strip newlines
-                # - handle DOS newlines gracefully
-                self.stderr.append(proc_stderr.rstrip(os.linesep))
-                if self._output:
-                    sys.stderr.write(self._prefix + proc_stderr)
-            if proc_stdout != '':
-                self.stdout.append(proc_stdout.rstrip(os.linesep))
-                if self._output:
-                    sys.stdout.write(self._prefix + proc_stdout)
-
-        self._proc.wait()
-
-    def exec_cmd_win(self, stdin, stdout, stderr):
-        'partly a reimplementation of Popen.communicate to allow a non blocking communication when using pipes.'
-
-        # needed for decisions below
-        self._stdout = self._stderr = None
-
-        # fork it...
-        self._proc = subprocess.Popen(self._cmd, shell=True,
-                                     stdin=stdin,
-                                     stdout=stdout,
-                                     stderr=stderr)
-
-        def _process_stdout():
-            proc_stdout = ''
-            while self._proc.returncode == None:
-                proc_stdout = self._proc.stdout.readline()
-                if proc_stdout != '':
-                    self.stdout.append(proc_stdout.rstrip(os.linesep))
-                    if self._output:
-                        sys.stdout.write(self._prefix + proc_stdout)
-
-        def _process_stderr():
-            proc_stderr = ''
-            while self._proc.returncode == None:
-                proc_stderr = self._proc.stderr.readline()
-                if proc_stderr != '':
-                    self.stderr.append(proc_stderr.rstrip(os.linesep))
-                    if self._output:
-                        sys.stderr.write(self._prefix + proc_stderr)
-
-        if (not self._output or
-            self._output == 'both' or
-            self._output == 'stdout'):
-            self._stdout = []
-            stdout_thread = threading.Thread(target=_process_stdout)
-            stdout_thread.start()
-        if (not self._output or
-            self._output == 'both' or
-            self._output == 'stderr'):
-            self._stderr = []
-            stderr_thread = threading.Thread(target=_process_stderr)
-            stderr_thread.start()
-
-        self._proc.wait()
-
-        if self.stdout:
-            stdout_thread.join()
-        else:
-            self._stdout = []
-        if self.stderr:
-            stderr_thread.join()
-        else:
-            self._stderr = []

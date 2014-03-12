@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # ====================================================================
 # Copyright (c) Hannes Schweizer <hschweizer@gmx.net>
 #
@@ -13,10 +13,10 @@ rsync_excludes = '--exclude="/dev/" --exclude="/lost+found/" --exclude="/proc/" 
 
 transfer_engines = (
     'dd',
-    'git',       # deprecated, not feasable
-    'rdiff',     # will be replaced by snapshot facility of btrfs
+    #'git',       # deprecated, not feasable
+    #'rdiff',     # will be replaced by snapshot facility of btrfs
     'rsync',
-    'snapshot',  # deprecated
+    #'snapshot',  # deprecated
     'unison',
     )
 
@@ -114,6 +114,7 @@ manual_tasks = {
          '/tmp/backup/diablo/rsync/',
          'rsync', ''),
         ),
+    'diablo': (),
     }
 
 # module imports
@@ -123,34 +124,22 @@ import gentoo.ui
 import pylon.base
 
 class ui(gentoo.ui.ui):
+    def __init__(self, owner):
+        super().__init__(owner)
 
-    def cleanup(self):
-        super(ui, self).cleanup(self.opts.type)
+        import argparse
+        def validate_engine(x):
+            if x not in transfer_engines:
+                raise argparse.ArgumentTypeError('unknown backup engine')
+            return x
 
-    def configure(self):
-        super(ui, self).configure()
-
-        self.parser.add_option('-t','--type', type='string',
-                               help=self.extract_doc_strings())
-        self.parser.add_option('-s','--src', type='string',
-                               help='do not loop all tasks, specify src of single task')
-        self.parser.add_option('-e','--engine', type='string',
-                               help='use a specific backup engine')
-        self.parser.add_option('-o','--options', type='string',
-                               default='',
-                               help='give additional options')
-
-    def validate(self):
-        super(ui, self).validate()
-        if (self.opts.type == 'modify' and
-            (not self.opts.src or
-             self.opts.options == '')):
-            raise self.owner.exc_class('modify needs --src & --options')
-        if not self.opts.type:
-            raise self.owner.exc_class('type spec is mandatory')
-        if (self.opts.engine and
-            self.opts.engine not in transfer_engines):
-            raise self.owner.exc_class('unknown backup engine')
+        self.parser_common.add_argument('-s','--src',
+                                        help='do not loop all tasks, specify src of single task')
+        self.parser_common.add_argument('-e','--engine', type=validate_engine,
+                                        help='use a specific backup engine')
+        self.init_op_parser()
+        self.parser_modify.add_argument('-o','--options',
+                                        help='pass custom string to backup module')
 
 class adm_backup(pylon.base.base):
     'container script for all backup related admin tasks'
@@ -163,8 +152,8 @@ class adm_backup(pylon.base.base):
 
         import datetime
         t1 = datetime.datetime.now()
-        getattr(self, self.__class__.__name__ + '_' + self.ui.opts.type)()
-        self.ui.info(self.ui.opts.type + ' took ' + str(datetime.datetime.now() - t1) + ' to complete...')
+        getattr(self, self.__class__.__name__ + '_' + self.ui.args.op)()
+        self.ui.info(self.ui.args.op + ' took ' + str(datetime.datetime.now() - t1) + ' to complete...')
 
     def lock_dest(self, dest_path):
         # check if another backup process is already active
@@ -204,10 +193,10 @@ class adm_backup(pylon.base.base):
     def adm_backup_auto(self):
         'perform host-specific automatic tasks'
         for (src, dest, engine, opts) in auto_tasks[self.ui.hostname]:
-            if ((not self.ui.opts.engine or
-                 self.ui.opts.engine == engine) and
-                (not self.ui.opts.src or
-                 self.ui.opts.src == src)):
+            if ((not self.ui.args.engine or
+                 self.ui.args.engine == engine) and
+                (not self.ui.args.src or
+                 self.ui.args.src == src)):
                 self.dispatch(lambda src=src,dest=dest,opts=opts,engine=engine:
                               self.lock(src, dest, opts, getattr(self, engine).do),
                               blocking=False)
@@ -218,10 +207,10 @@ class adm_backup(pylon.base.base):
         tasks = list(auto_tasks[self.ui.hostname])
         tasks.extend(manual_tasks[self.ui.hostname])
         for (src, dest, engine, opts) in tasks:
-            if ((not self.ui.opts.engine or
-                 self.ui.opts.engine == engine) and
-                (not self.ui.opts.src or
-                 self.ui.opts.src == src)):
+            if ((not self.ui.args.engine or
+                 self.ui.args.engine == engine) and
+                (not self.ui.args.src or
+                 self.ui.args.src == src)):
                 self.lock(src, dest, opts, getattr(self, engine).info)
 
     def adm_backup_list(self):
@@ -237,19 +226,19 @@ class adm_backup(pylon.base.base):
         tasks = list(auto_tasks[self.ui.hostname])
         tasks.extend(manual_tasks[self.ui.hostname])
         for (src, dest, engine, opts) in tasks:
-            if ((not self.ui.opts.engine or
-                 self.ui.opts.engine == engine) and
-                (not self.ui.opts.src or
-                 self.ui.opts.src == src)):
+            if ((not self.ui.args.engine or
+                 self.ui.args.engine == engine) and
+                (not self.ui.args.src or
+                 self.ui.args.src == src)):
                 self.lock(src, dest, opts, getattr(self, engine).modify)
 
     def adm_backup_manual(self):
         'perform host-specific manual tasks'
         for (src, dest, engine, opts) in manual_tasks[self.ui.hostname]:
-            if ((not self.ui.opts.engine or
-                 self.ui.opts.engine == engine) and
-                (not self.ui.opts.src or
-                 self.ui.opts.src == src)):
+            if ((not self.ui.args.engine or
+                 self.ui.args.engine == engine) and
+                (not self.ui.args.src or
+                 self.ui.args.src == src)):
                 self.dispatch(lambda src=src,dest=dest,opts=opts,engine=engine:
                               self.lock(src, dest, opts, getattr(self, engine).do),
                               blocking=False)

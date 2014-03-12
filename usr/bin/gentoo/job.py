@@ -17,9 +17,9 @@ class job(pylon.job.job):
 
     def exec_cmd(self):
         try:
-            super(job, self).exec_cmd()
+            super().exec_cmd()
         finally:
-            if self.ui.opts.report and not self.ui.opts.dry_run:
+            if self.ui.args.mail and not self.ui.args.dry_run:
                 with job.report_stream_lock:
                     if ((self._output == 'both' or
                         self._output == 'stdout') and

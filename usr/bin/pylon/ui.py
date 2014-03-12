@@ -6,33 +6,9 @@
 # the Free Software Foundation; either version 3, or (at your option)
 # any later version.
 # ====================================================================
+import argparse
 import logging
 import sys
-
-# hack to enable newlines in optparse help texts
-import optparse
-import os
-import textwrap
-class FixedTextWrapper(textwrap.TextWrapper):
-    # fix textwrap behavior in Windows
-    def fill(self, text):
-        return os.linesep.join(self.wrap(text))
-class TextWrapper:
-    @staticmethod
-    def wrap(text, width, **kw):
-        result = []
-        w = FixedTextWrapper(width=width, **kw)
-        for line in text.split(os.linesep):
-            result.extend(w.wrap(line))
-        return result
-    @staticmethod
-    def fill(text, width, **kw):
-        result = []
-        w = FixedTextWrapper(width=width, **kw)
-        for line in text.split(os.linesep):
-            result.append(w.fill(line))
-        return os.linesep.join(result)
-optparse.textwrap = TextWrapper()
 
 class ui(object):
     'nice command line user interface class used by pylon based scripts'
@@ -48,9 +24,6 @@ class ui(object):
     def logger(self):
         return self._logger
     @property
-    def opts(self):
-        return self._opts
-    @property
     def owner(self):
         return self._owner
     @property
@@ -60,6 +33,8 @@ class ui(object):
     def __init__(self, owner):
         self._owner = owner
 
+        # Logger
+        ########################################
         # define additional logging level for a better verbosity granularity
         logging.addLevelName(ui.EXT_INFO, 'INFO')
 
@@ -78,52 +53,35 @@ class ui(object):
         self._handler['stdout'].setFormatter(self.formatter['default'])
         self.logger.addHandler(self._handler['stdout'])
 
-        self.configure()
+        # Argument Parser
+        ########################################
+        # take any existing class doc string from our owner and set it as description
+        self._parser = argparse.ArgumentParser(description=self.owner.__doc__)
 
-    def configure(self):
-        'process configuration before setting up UI'
-        import optparse
-
-        # disable shortcut of previously added option
-        self._parser = optparse.OptionParser(conflict_handler='resolve')
-
-        # take an existing class doc string from our owner and set it as usage message
-        if self.owner.__doc__:
-            self.parser.usage = self.owner.__doc__
-
-        # define the common basic set of options
-        self.parser.add_option('--dry_run', action='store_true',
-                               help='switch to passive behavior (no subprocess execution)')
-        self.parser.add_option('-q', action='count', dest='quiet', default=0,
-                               help='quiet output (multiply for more silence)')
-        self.parser.add_option('--traceback', action='store_true',
-                               help='enable python traceback for debugging purposes')
-        self.parser.add_option('-v', action='count', dest='verbosity', default=0,
-                               help='verbose output (multiply for more verbosity)')
-
-    def validate(self):
-        'stub for command line argument validation'
-        pass
+        # define the common basic set of arguments
+        self.parser.add_argument('--dry_run', action='store_true',
+                                 help='switch to passive behavior (no subprocess execution)')
+        self.parser.add_argument('-q', action='count', dest='quiet', default=0,
+                                 help='quiet output (multiply for more silence)')
+        self.parser.add_argument('--traceback', action='store_true',
+                                 help='enable python traceback for debugging purposes')
+        self.parser.add_argument('-v', action='count', dest='verbosity', default=0,
+                                 help='verbose output (multiply for more verbosity)')
 
     def setup(self):
-        (self._opts, self._args) = self.parser.parse_args()
-        try:
-            self.validate()
-        except self.owner.exc_class:
-            self.parser.print_help()
-            raise
+        self._args = self.parser.parse_args()
 
         # determine default verbosity behavior
         l = logging.INFO
-        if self.opts.verbosity > 1 or self.opts.dry_run or self.opts.traceback:
+        if self.args.verbosity > 1 or self.args.dry_run or self.args.traceback:
             l = logging.DEBUG
-        elif self.opts.verbosity > 0:
+        elif self.args.verbosity > 0:
             l = ui.EXT_INFO
 
         # quiet switch takes precedence
-        if self.opts.quiet > 1:
+        if self.args.quiet > 1:
             l = logging.ERROR
-        elif self.opts.quiet > 0:
+        elif self.args.quiet > 0:
             l = logging.WARNING
         self.logger.setLevel(l)
 
@@ -131,18 +89,17 @@ class ui(object):
         'stub for basic cleanup stuff'
         pass
 
-    def handle_exception_gracefully(self, e_type):
+    def handle_exception_gracefully(self, et):
         'returns True if an exception should NOT be thrown at python interpreter'
         return (
-            # no traceback for invalid options case
-            (hasattr(self, 'opts') and not self.opts.traceback) or
+            not self.args.traceback or
 
             # catch only objects deriving from Exception. Omit trivial
             # things like KeyboardInterrupt (derives from BaseException)
-            not issubclass(e_type, Exception)
+            not issubclass(et, Exception)
             )
 
-    def excepthook(self, e_type, e_val, e_tb):
+    def excepthook(self, et, ei, tb):
         'pipe exceptions to logger, control traceback display. default exception handler will be replaced by this function'
 
         # switch to a more passive exception handling mechanism if
@@ -151,8 +108,8 @@ class ui(object):
         if len(self.owner.jobs) > 0:
             origin = 'thread'
 
-        if self.handle_exception_gracefully(e_type):
-            self.error(repr(e_type) + ' ' + str(e_val))
+        if self.handle_exception_gracefully(et):
+            self.error(repr(et) + ' ' + str(ei))
             if origin == 'default':
                 self.cleanup()
 
@@ -164,16 +121,7 @@ class ui(object):
                 self.logger.exception('Traceback')
             else:
                 # avoid losing any traceback info
-                sys.__excepthook__(e_type, e_val, e_tb)
-
-    def _help_wrapper(self, text, width=None):
-        'modified textwrapper function which will work inside of optparse strings'
-        if width is None:
-            width = self.parser.formatter.width - self.parser.formatter.help_position
-        wrapper = FixedTextWrapper(initial_indent    ='  ',
-                                   subsequent_indent ='  ',
-                                   width=width)
-        return os.linesep.join([wrapper.fill(l) for l in text.split(os.linesep)])
+                sys.__excepthook__(et, ei, tb)
 
     # logging level wrapper functions
     def debug(self, msg):

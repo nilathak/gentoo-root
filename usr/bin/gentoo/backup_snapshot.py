@@ -222,7 +222,7 @@ class backup_snapshot(pylon.base.base):
         # the overdue snapshots and all smaller timedeltas are affected
         affected_snapshot_keys = backup_snapshot.rsync_deltas_sorted[0:backup_snapshot.rsync_deltas_sorted.index(diff_key)]
 
-        if not self.ui.opts.dry_run:
+        if not self.ui.args.dry_run:
 
             for k in affected_snapshot_keys:
                 # before losing information about the age of smaller

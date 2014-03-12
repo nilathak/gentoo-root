@@ -55,7 +55,7 @@ class backup_rdiff(pylon.base.base):
         # extract date and size column from output
         diff_sizes = {}
         # ignore the two header lines
-        if not self.ui.opts.dry_run:
+        if not self.ui.args.dry_run:
             for l in output[2:]:
                 m = re.match(output_pat, l)
                 if m:
@@ -201,8 +201,8 @@ class backup_rdiff(pylon.base.base):
     def modify(self, src_path, dest_path, opts=''):
         'modify backup destinations according to -o switch'
 
-        cmd = self.ui.opts.options.split(',')[0]
-        arg = self.ui.opts.options.split(',')[1]
+        cmd = self.ui.args.options.split(',')[0]
+        arg = self.ui.args.options.split(',')[1]
 
         if cmd == 'remove':
             self.ui.info('Removing obsolete diff sets from %s...' % dest_path)

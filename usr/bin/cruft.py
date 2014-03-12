@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # ====================================================================
 # Copyright (c) Hannes Schweizer <hschweizer@gmx.net>
 #
@@ -27,6 +27,7 @@
 # - find a neat way to exclude host-specific patterns (eg, belial stuff,...)
 # - .keep files are cruft if .keep_xyz files are provided by package (ie. cron.daily)
 # - implement reverse search: determine file in cruft.d, which contains/generates exclusion pattern for specific path
+# - add __pycache__ pattern to ignore python3 bytecode dirs
 # - ignore syntax
 #   ^/path/single_file$
 #   ^/path/single_dir/$
@@ -62,45 +63,28 @@ po_digest = 2
 co_date = 0
 
 class ui(gentoo.ui.ui):
-
-    def cleanup(self):
-        super(ui, self).cleanup(self.opts.type)
-
-    def configure(self):
-        super(ui, self).configure()
-
-        self.parser.add_option('-t', '--type', type='string',
-                               help=self.extract_doc_strings())
-        self.parser.add_option('-f', '--format', type='choice', choices=('path', 'date', 'rm_chain'),
-                               default='path',
-                               help='report format:' + os.linesep +
-                               ' #date' + os.linesep +
-                               self._help_wrapper('report cruft objects sorted by modification date') + os.linesep +
-                               ' #path' + os.linesep +
-                               self._help_wrapper('report cruft objects sorted by object path (default)') + os.linesep +
-                               ' #rm_chain' + os.linesep +
-                               self._help_wrapper('report cruft objects as chained rm commands'))
-        self.parser.add_option('-i', '--ignore_root', type='string',
-                               default=default_ignore_root,
-                               help='give alternative path to directory containing ignore pattern files')
-        self.parser.add_option('-p', '--path', type='string',
-                               default='/',
-                               help='check only specific path for cruft')
-        self.parser.add_option('-s', dest='rescan', action='count',
-                               default=0,
-                               help='ignore cache (located in ' + cache_base_path + ') and rescan:' + os.linesep +
-                               ' -s  : rescan system tree' + os.linesep +
-                               ' -ss : rescan system & portage tree')
-        self.parser.add_option('-c', '--check', action='store_true',
-                               help='perform gentoolkit sanity checks on all installed packages (time consuming!)')
-        # FIXME
-        # self.parser.add_option('--stage_file', type='string',
-        #                       help='give the path to a valid CONTENTS file of a gentoo stage release. all files listed in the file are then considered to be no cruft.')
-
-    def validate(self):
-        super(ui, self).validate()
-        if not self.opts.type:
-            raise self.owner.exc_class('specify the type of operation')
+    def __init__(self, owner):
+        super().__init__(owner)
+        self.parser_common.add_argument('-i', '--ignore_root',
+                                        default=default_ignore_root,
+                                        help='give alternative path to directory containing ignore pattern files')
+        self.init_op_parser()
+        self.parser_report.add_argument('-c', '--check', action='store_true',
+                                        help='perform gentoolkit sanity checks on all installed packages (time consuming!)')
+        self.parser_report.add_argument('-p', '--path',
+                                        default='/',
+                                        help='check only specific path for cruft')
+        self.parser_report.add_argument('-s', dest='rescan', action='count',
+                                        default=0,
+                                        help='ignore cache (located in ' + cache_base_path + ') and rescan:\
+                                        //-s// rescan system tree,\
+                                        //-ss// rescan system & portage tree')
+        self.parser_report.add_argument('-f', '--format', choices=('path', 'date', 'rm_chain'),
+                                        default='path',
+                                        help='\
+                                        //date// report cruft objects sorted by modification date,\
+                                        //path// report cruft objects sorted by object path (default),\
+                                        //rm_chain// report cruft objects as chained rm commands')
 
 class cruft(pylon.base.base):
     'search filesystem cruft on a gentoo system, dedicated to all those control freaks out there...'
@@ -109,14 +93,14 @@ class cruft(pylon.base.base):
         import datetime
         t1 = datetime.datetime.now()
         self.data = {}
-        getattr(self, self.__class__.__name__ + '_' + self.ui.opts.type)()
-        self.ui.debug(self.ui.opts.type + ' took ' + str(datetime.datetime.now() - t1) + ' to complete...')
+        getattr(self, self.__class__.__name__ + '_' + self.ui.args.op)()
+        self.ui.debug(self.ui.args.op + ' took ' + str(datetime.datetime.now() - t1) + ' to complete...')
 
     def collect_ignore_patterns(self):
         self.ui.info('Collecting ignore patterns...')
 
         pattern_files = []
-        for root, dirs, files in os.walk(self.ui.opts.ignore_root):
+        for root, dirs, files in os.walk(self.ui.args.ignore_root):
 
             for f in files:
                 # assume leaf dirs contain package-specific patterns
@@ -157,7 +141,7 @@ class cruft(pylon.base.base):
             # - interpret spaces as delimiter for multiple patterns
             #   on one line. needed for automatic bash expansion by
             #   {}. however this breaks ignore patterns with spaces!
-            re_list_expanded = map(lambda x: x.rstrip(os.linesep).strip().split(), re_list_raw)
+            re_list_expanded = [x.rstrip(os.linesep).strip().split() for x in re_list_raw]
 
             # FIXME regex strings can't be that fucked up, this actually never triggered
             # try to compile patterns of each pattern file to facilitate regex debugging
@@ -207,11 +191,11 @@ class cruft(pylon.base.base):
 
         self.ui.info('Collecting objects managed by portage...')
         objects = {}
-        if self.ui.opts.check:
+        if self.ui.args.check:
             self.ui.info('Checking package sanity using gentoolkit...')
         for pkg in sorted(vardb.cpv_all()):
             contents = vardb._dblink(pkg).getcontents()
-            if self.ui.opts.check:
+            if self.ui.args.check:
 
                 # iterate one contents item at a time to allow easy
                 # mapping of error <-> object path
@@ -245,7 +229,7 @@ class cruft(pylon.base.base):
             objects_symlinks[os.path.join(os.path.realpath(os.path.dirname(k)),
                                           os.path.basename(k))] = v
         objects = objects_symlinks
-
+        
         return objects
 
     def collect_system_objects(self):
@@ -255,7 +239,7 @@ class cruft(pylon.base.base):
         self.ui.info('Collecting objects in system tree...')
         objects = []
         import copy
-        for root, dirs, files in os.walk(self.ui.opts.path, onerror=lambda x: self.ui.error(str(x))):
+        for root, dirs, files in os.walk(self.ui.args.path, onerror=lambda x: self.ui.error(str(x))):
 
             # remove excluded subtrees early to speed up walk.
             for d in copy.copy(dirs):
@@ -321,22 +305,22 @@ class cruft(pylon.base.base):
         cache = {}
         cache_path = os.path.join(cache_base_path, cache_base_name + '_' + self.ui.hostname)
         if (os.access(cache_path, os.R_OK) and
-            self.ui.opts.rescan <= 1):
+            self.ui.args.rescan <= 1):
             with open(cache_path, 'rb') as cache_file:
                 self.ui.info('Loading cache...')
                 cache = pickle.load(cache_file)
 
         dirty = False
         if ('system' not in cache or
-            self.ui.opts.rescan > 0):
+            self.ui.args.rescan > 0):
             self.data['system'] = cache['system'] = self.collect_system_objects()
             dirty = True
         else:
             self.ui.warning('Restoring system object list from cache...')
             self.data['system'] = cache['system']
         if ('portage' not in cache or
-            self.ui.opts.rescan > 1 or
-            self.ui.opts.check):
+            self.ui.args.rescan > 1 or
+            self.ui.args.check):
             self.data['portage'] = cache['portage'] = self.collect_portage_objects()
             dirty = True
         else:
@@ -365,10 +349,10 @@ class cruft(pylon.base.base):
             fmt = '%(path_str)s, %(date_str)s'
             reverse = False
             sort_key = path
-            if self.ui.opts.format == 'date':
+            if self.ui.args.format == 'date':
                 reverse = True
                 sort_key = date
-            if self.ui.opts.format == 'rm_chain':
+            if self.ui.args.format == 'rm_chain':
                 fmt = 'rm -rf "%(path_str)s" && \\'
             cruft_keys.sort(key=sort_key, reverse=reverse)
 

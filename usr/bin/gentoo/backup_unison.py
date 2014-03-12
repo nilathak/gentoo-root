@@ -14,7 +14,7 @@ class backup_unison(pylon.base.base):
     def do(self, src_path, dest_path, opts=''):
         self.ui.info('Synchronizing %s to %s...' % (src_path, dest_path))
         try:
-            self.dispatch('unison-2.32 ' +
+            self.dispatch('eselect unison update && unison ' +
 
                           # paths
                           src_path + ' ' + dest_path + ' '

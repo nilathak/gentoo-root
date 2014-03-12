@@ -6,13 +6,6 @@
 # the Free Software Foundation; either version 3, or (at your option)
 # any later version.
 # ====================================================================
-
-# FIXME
-# autmatic enable for python 3000 compatibility warnings
-import ctypes
-ctypes.c_int.in_dll(ctypes.pythonapi, "Py_Py3kWarningFlag").value = 1
-
-import itertools
 import sys
 import threading
 import types
@@ -100,7 +93,7 @@ class base(object):
             parent = threading.current_thread()
 
             to_join = self.jobs[parent]
-            while any(itertools.imap(lambda x: x.thread.is_alive(), to_join)):
+            while any(map(lambda x: x.thread.is_alive(), to_join)):
                 for j in to_join:
                     j.join()
 
@@ -108,7 +101,7 @@ class base(object):
                 [self.jobs[parent].extend(v) for (k, v) in self.jobs.items() if not k.is_alive()]
                 to_join = self.jobs[parent]
 
-            unhandled_exc = any(itertools.imap(lambda x: x.exc_info != None, to_join))
+            unhandled_exc = any(map(lambda x: x.exc_info != None, to_join))
 
             # all children finished
             del self.jobs[parent]
@@ -142,14 +135,9 @@ class memoize(object):
             object = self.cache[args] = self.fn(*args)
         return object
 
-def reraise():
-    'do a correct exception reraise'
-    (e_type, e_val, e_tb) = sys.exc_info()
-    raise e_type, e_val, e_tb
-
 def flatten(l):
     for el in l:
-        if hasattr(el, '__iter__') and not isinstance(el, basestring):
+        if hasattr(el, '__iter__') and not isinstance(el, str):
             for sub in flatten(el):
                 yield sub
         else:
