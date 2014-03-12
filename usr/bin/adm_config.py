@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # ====================================================================
 # Copyright (c) Hannes Schweizer <hschweizer@gmx.net>
 #
@@ -7,319 +7,184 @@
 # the Free Software Foundation; either version 3, or (at your option)
 # any later version.
 # ====================================================================
+# thoughts about flow
+#  - start always with checked out host branch
+#  - pull in external changes only into clean working trees (redundant commits are resolved by git rebase)
+#  - host MUST NEVER be merged onto master
+#  - commit-based cherry picking from host to master tricky (commits containing host+master files need to be split)
+#  - thus, directly commit on host and master using restricted file set and interactive commit
+#  - rebasing host with remote master ensures a minimal diffset ("superimposing" files are auto-removed if no longer needed)
+#  - avoid host branches on central bare repo. GUI development mainly on master files, host branches backup done by host backup
+#
 # FIXME
-# - shift /opt/portage into hg repo
-#   - no extra cruft rule necessary
-#   - version control
-#   - central repo config files (metadata, ...)
+#  - AARGH: additions are removed by repo reset (can be savely removed?, how to stash index?) ADD /etc/portage/cruft.d + /opt/portage
+#  - setup eclipse with new git clone
+#  - install nano as default editor => /etc/env.d/99editor found in cruft report? => add to master branch
+#  - sync new PYLON/GENTOO to DMCE + adapt essence_blender.py (opts as common positional argument?)
+#  - belial/baal:
+#    - add periodic report
+#    - replace mercurial with git in world file
 # ====================================================================
 
 # module settings
-repo_path = '/mnt/Dropbox/work/projects/workspace/gentoo'
-repo_user = 'schweizer'
+repo_path = '/mnt/Dropbox/work/projects/workspace/gentoo-repo'
 hosts = [
     'diablo',
     'baal',
     'belial',
     ]
+# always chdir to work-tree to avoid long relative paths when using --git-dir + --work-tree and calling this script from arbitrary directory
+git_cmd = 'cd / && git '
 
 # module imports
 import os
-import re
-import sys
-
-try:
-    import gentoo.job
-except ImportError:
-    # make life easier during initial bootstrap from repo path
-    sys.path.append(os.path.join(repo_path, 'usr/bin'))
-    import gentoo.job
+import gentoo.job
 import gentoo.ui
 import pylon.base
 
 class ui(gentoo.ui.ui):
+    def __init__(self, owner):
+        super().__init__(owner)
+        self.init_op_parser()
+        self.parser_deliver.add_argument('-s', '--skip', action='count', default=0,
+                                         help='resume deliver after manual conflict resolution (1=continue after origin/master pull, 2=continue after host rebase)')
 
-    def cleanup(self):
-        super(ui, self).cleanup(self.opts.type)
-
-    def configure(self):
-        super(ui, self).configure()
-        self.parser.add_option('-t', '--type', type='string',
-                               help=self.extract_doc_strings())
-        self.parser.add_option('-f', '--force', action='store_true',
-                               help='overwrite repository files with system files in all update operations')
-        self.parser.add_option('-i', '--force_import', action='store_true',
-                               help='overwrite system files with repository files in all update operations')
-        self.parser.add_option('-m', '--missing', action='store_true',
-                               help='dispatch missing config files (initial linking)')
-
-    def validate(self):
-        super(ui, self).validate()
-        # this host already configured?
-        if self.hostname not in hosts:
-            raise self.owner.exc_class('host has not yet been included in list')
-        if not self.opts.type:
-            raise self.owner.exc_class('specify the type of operation')
+    def setup(self):
+        super().setup()
+        # validate hostname
+        if not self.hostname in hosts:
+            raise self.owner.exc_class('unknown host ' + self.hostname)
 
 class adm_config(pylon.base.base):
-    'manage and dispatch config files across multiple hosts'
+    'manage config files across multiple hosts'
 
     def run_core(self):
-        getattr(self, self.__class__.__name__ + '_' + self.ui.opts.type)()
+        getattr(self, self.__class__.__name__ + '_' + self.ui.args.op)()
 
-    # Config file merging
-    # =========================================================================
     @pylon.base.memoize
-    def extract_leaf(self, f):
-        leaf = ('', f.replace(repo_path, ''))
-        for h in hosts:
-            if f.find(os.path.join(repo_path, h)) != -1:
-                leaf = (h, f.replace(os.path.join(repo_path, h), ''))
-        return leaf
-    def extract_host_leafs(self):
-        'traverse repo and extract config files for current host'
+    def host_files(self):
+        self.ui.ext_info('Finding host-specific files (host-only + superimposed)...')
+        host_files_actual = self.dispatch(git_cmd + 'diff origin/master ' + self.ui.hostname + ' --name-only', output=None, passive=True).stdout
+        host_files_expect = self.dispatch(git_cmd + 'diff origin/master ' + self.ui.hostname + ' --name-only --diff-filter=AM', output=None, passive=True).stdout
+        host_files_unexpect = set(host_files_actual) - set(host_files_expect)
+        if host_files_unexpect:
+            raise self.exc_class('unexpected host-specific diff:' + os.linesep + os.linesep.join(sorted(host_files_unexpect)))
+        return sorted(host_files_expect)
 
-        try:
-            os.chdir(repo_path)
-        except OSError:
-            raise self.exc_class('local repository not found')
+    @pylon.base.memoize
+    def master_files(self):
+        self.ui.ext_info('Finding master-specific files (common files)...')
+        all_files = self.dispatch(git_cmd + 'ls-files', output=None, passive=True).stdout
+        master_files = set(all_files) - set(self.host_files())
+        return sorted(master_files)
 
-        self.ui.ext_info('Extracting file leafs, assuming host ' + self.ui.hostname + '...')
+    def adm_config_deliver(self):
+        'sequence for delivering master + host'
+        
+        import logging
+        verbosity = 'stderr'
+        if self.ui.logger.getEffectiveLevel() == logging.DEBUG:
+            verbosity = 'both'
 
-        # extract config files under version control
-        files = self.dispatch('su ' + repo_user + ' -c "hg manifest"',
-                              passive=True, output=None).stdout
-        files.remove('.hgignore')
+        if self.ui.args.skip < 1:
 
-        # extract config structure
-        files = [self.extract_leaf(os.path.abspath(f)) for f in files]
+            self.ui.info('Delivering host-specific changes...')
+            self.ui.debug('Ensure we start with an empty staging area')
+            self.dispatch(git_cmd + 'reset', output=verbosity)
+            self.ui.debug('Looping interactive commit until error code >0 => no more modifications to stage or we intentionally did not select any')
+            try:
+                while True:
+                    self.dispatch(git_cmd + 'commit --interactive -uno ' + ' '.join(self.host_files()), output='nopipes')
+                    if self.ui.args.dry_run:
+                        break
+            except self.exc_class:
+                pass
 
-        struct = {'': [],
-                  self.ui.hostname: []}
+            self.ui.debug('Creating stash branch for remaining unstaged modifications')
+            self.dispatch(git_cmd + 'stash save', output=verbosity)
+            self.dispatch(git_cmd + 'stash branch master', output=verbosity)
+            self.ui.info('Delivering master-specific changes...')
+            self.ui.debug('Ensure we start with an empty staging area')
+            self.dispatch(git_cmd + 'reset', output=verbosity)
+            try:
+                while True:
+                    self.dispatch(git_cmd + 'commit --interactive --no-status -uno ' + ' '.join(self.master_files()), output='nopipes')
+                    if self.ui.args.dry_run:
+                        break
+            except self.exc_class:
+                pass
 
-        for (k, v) in files:
-            if k in struct:
-                struct[k].append(v)
+            self.ui.debug('Save any unstaged modifications we do not want to commit anywhere yet (host- or master-specific)')
+            self.dispatch(git_cmd + 'stash save', output=verbosity)
 
-        # remove common files superimposed by host files
-        self.superimposed = set(struct['']) & set(struct[self.ui.hostname])
-        for x in self.superimposed:
-            struct[''].remove(x)
-        return struct
+            try:
+                self.ui.debug('Rebasing local master to remote master...')
+                self.dispatch(git_cmd + 'rebase --onto origin/master ' + self.ui.hostname, output=verbosity)
+            except self.exc_class:
+                raise self.exc_class('Automatic rebase of master to remote master failed! Resolve manually: git diff, git add, git rebase --continue, -s')
 
-    def create_mapping(self, src, dest):
-        import shutil
+        if self.ui.args.skip < 2:
+            self.ui.debug('Pushing rebased master to remote...')
+            self.dispatch(git_cmd + 'push origin master', output=verbosity)
 
-        if (os.path.lexists(dest) and
-            not self.ui.opts.force_import):
-            self.ui.debug('MAP  ' + dest + ' -> ' + src)
-            if not self.ui.opts.dry_run:
-                shutil.copy2(dest, src)
-        else:
-            self.ui.debug('MAP  ' + dest + ' <- ' + src)
-            if not self.ui.opts.dry_run:
-                # create all necessary parent dirs
-                if not os.path.lexists(os.path.dirname(dest)):
-                    os.makedirs(os.path.dirname(dest))
-                shutil.copy2(src, dest)
+            try:
+                self.ui.debug('Rebasing local host to updated remote master...')
+                self.dispatch(git_cmd + 'checkout ' + self.ui.hostname, output=verbosity)
+                self.dispatch(git_cmd + 'rebase', output=verbosity)
+            except self.exc_class:
+                raise self.exc_class('Automatic rebase of local host to updated remote master failed! Resolve manually: git diff, git add, git rebase --continue, -ss')
 
-    def same_md5(self, f1, f2):
-        output = self.dispatch('md5sum %s %s' % (f1, f2),
-                                      output=None,
-                                      passive=True).stdout
-        if output[0].split()[0] == output[1].split()[0]:
-            return True
-        return False
+        self.ui.debug('Cleaning up...')
+        self.dispatch(git_cmd + 'branch -d master', output=verbosity)
+        self.ui.debug('Restoring any stashed changes...')
+        self.dispatch(git_cmd + 'stash pop', output=verbosity)
 
-    def extract_mapping(self, leafs):
-        'collect info about file mapping on configured host.'
+    def adm_config_report(self):
+        'generate report'
+        self.ui.info('Listing host-specific diff:')
+        self.dispatch(git_cmd + 'diff ' + self.ui.hostname + ' --name-status -- ' + ' '.join(self.host_files()), output='both')
 
-        struct = {
-            'DIFF': [],
-            'MISS': [],
-            'OK': [],
-            }
-        for k in leafs:
-            for f in leafs[k]:
+        self.ui.info('Listing master-specific diff:')
+        self.dispatch(git_cmd + 'diff origin/master --name-status -- ' + ' '.join(self.master_files()), output='both')
 
-                # construct repo path
-                f_repo = os.path.join(repo_path, k, f.strip('/'))
+        if self.ui.args.mail:
+            self.adm_config_md5()
 
-                # check if file is missing in the system tree
-                if os.path.lexists(f) and os.path.isfile(f):
+    def list_repo(self):
+        return [''.join(('/',x)) for x in self.dispatch(git_cmd + 'ls-files', output=None).stdout]
 
-                    # is file only existing in manifest listing of repo?
-                    if not os.path.lexists(f_repo):
-                        self.ui.warning('REPO_MISS ' + f_repo)
+    def adm_config_list(self):
+        'simple list of managed files for the current host'
+        for f in self.list_repo():
+            print(f)
 
-                    # any differences detected?
-                    else:
-                        if (not self.same_md5(f, f_repo) or
-                            # permission difference?
-                            os.lstat(f).st_mode != os.lstat(f_repo).st_mode):
-                            struct['DIFF'].append((f_repo, f))
-
-                        # file mapping OK!
-                        else:
-                            struct['OK'].append((f_repo, f))
-                            self.ui.ext_info('OK   ' + f + ' <- ' + f_repo)
-
-                else:
-                    struct['MISS'].append((f_repo, f))
-
-        return struct
-
-    def check_md5(self, mapping):
-        'check for differences to MD5 values stored in portage DB.'
+    def adm_config_md5(self):
+        'check if portage md5 equals git-controlled file => can be removed from git'
 
         # generate custom portage object/pkg map once
         import cruft
+        import re
         objects = {}
         pkg_map = {}
         pkg_err = {}
+
         for pkg in sorted(cruft.vardb.cpv_all()):
             contents = cruft.vardb._dblink(pkg).getcontents()
             pkg_map.update(dict.fromkeys(contents.keys(), pkg))
             objects.update(contents)
-
-        repo_files = list(pylon.base.flatten(mapping.values()))
+     
+        repo_files = self.list_repo()
         portage_controlled = set(objects.keys()) & set(repo_files)
-
+     
         # openrc installs user version => MD5 sum always equal (look into ebuild)
         # /etc/conf.d/hostname (sys-apps/openrc-0.11.8)
         for f in portage_controlled:
             (n_passed, n_checked, errs) = cruft.contents_checker._run_checks(cruft.vardb._dblink(pkg_map[f]).getcontents())
-            if not filter(lambda e: re.search(f + '.*MD5', e), errs):
+            if not [e for e in errs if re.search(f + '.*MD5', e)]:
                 self.ui.warning('=MD5 %s (%s)' % (f, pkg_map[f]))
             else:
                 self.ui.debug('!MD5 %s (%s)' % (f, pkg_map[f]))
-
-    def adm_config_report(self, opts=None):
-        'generate report'
-        leafs = self.extract_host_leafs()
-        mapping = self.extract_mapping(leafs)
-        self.check_md5(mapping)
-
-        for k in mapping:
-            if k != 'OK':
-                for m in mapping[k]:
-                    self.ui.warning(k + ' ' + m[1] + ' <- ' + m[0])
-
-        # list superimposed files
-        for s in self.superimposed:
-            self.ui.info('Superimposed file: ' + s)
-
-        self.ui.ext_info('Reporting repository status...')
-        self.dispatch('su ' + repo_user + ' -c "hg stat"',
-                      output='both')
-
-    def auto_repair(self, mapping):
-        'do some automatic repairs'
-
-        # create missing files
-        if self.ui.opts.missing:
-            for (f_repo, f) in mapping['MISS']:
-                self.create_mapping(f_repo, f)
-                self.ui.info('repaired MISS ' + f + ' <- ' + f_repo)
-            mapping['MISS'] = []
-        else:
-            for (f_repo, f) in mapping['MISS']:
-                self.ui.warning('MISS ' + f + ' <- ' + f_repo)
-
-        # handle unmanaged files
-        if self.ui.opts.force:
-            for (f_repo, f) in mapping['DIFF']:
-                self.create_mapping(f_repo, f)
-                self.ui.info('repaired DIFF ' + f + ' <> ' + f_repo)
-            mapping['DIFF'] = []
-
-    def adm_config_repair(self, opts=None):
-        'repair broken links'
-        leafs = self.extract_host_leafs()
-        mapping = self.extract_mapping(leafs)
-        self.auto_repair(mapping)
-
-        # now try some interactive repairing for the DIFF error class
-        for (f_repo, f) in mapping['DIFF']:
-            self.ui.info('DIFF ' + f + ' <- ' + f_repo)
-
-            while True:
-                key = raw_input('(d)iff, (f)orce, force_(i)mport, (q)uit, (s)kip? ')
-                if key == 'q':
-                    raise self.exc_class('user break')
-                elif key == 's':
-                    break
-                elif key == 'd':
-                    self.dispatch('diff -bdu ' + f + ' ' + f_repo + ' | less',
-                                  output='nopipes')
-                elif key == 'i':
-                    self.ui.opts.force_import = True
-                    self.create_mapping(f_repo, f)
-                    self.ui.info('REPO ' + f + ' <- ' + f_repo)
-                    break
-                elif key == 'f':
-                    self.ui.opts.force_import = False
-                    self.create_mapping(f_repo, f)
-                    self.ui.info('SYS  ' + f + ' -> ' + f_repo)
-                    break
-
-        # now try some interactive repository admin
-        while True:
-            mod_files = self.dispatch('su ' + repo_user + ' -c "hg stat -man"',
-                                      passive=True, output=None).stdout
-            if len(mod_files) == 0:
-                break
-            mod_list = [str(mod_files.index(f)) + ') ' + f for f in mod_files]
-            self.ui.info('give comma-seperated set:' + os.linesep + os.linesep.join(mod_list))
-            line = sys.stdin.readline().rstrip(os.linesep)
-            files = [mod_files[int(idx)] for idx in line.split(',')]
-            files_str = ' '.join(files)
-
-            while True:
-                key = raw_input('(d)iff, (c)heck-in, (r)evert, (q)uit, (s)kip? ')
-                if key == 'q':
-                    raise self.exc_class('user break')
-                elif key == 's':
-                    break
-                elif key == 'd':
-                    self.dispatch('su ' + repo_user + ' -c "hg diff ' + files_str + '" | less',
-                                  output='nopipes')
-                elif key == 'c':
-                    msg = sys.stdin.readline()
-                    self.dispatch('su ' + repo_user + ' -c \'hg ci -m "' + msg.rstrip(os.linesep) + '" ' + files_str + '\'',
-                                  output='stderr')
-                    break
-                elif key == 'r':
-                    self.dispatch('su ' + repo_user + ' -c "hg revert --no-backup ' + files_str + '"',
-                                  output='stderr')
-
-                    # automatically restore the mapping after a repo revert
-                    self.ui.opts.force = True
-                    self.ui.opts.force_import = True
-                    self.auto_repair(self.extract_mapping(leafs))
-
-                    break
-
-    def adm_config_bootstrap(self, opts=None):
-        'initial config deployment procedure for the host specified by --hostname'
-
-        # auto repair (force importing switch true by default)
-        self.ui.opts.force = True
-        self.ui.opts.force_import = True
-        self.ui.opts.missing = True
-        self.auto_repair(self.extract_mapping(self.extract_host_leafs()))
-
-    def adm_config_list(self, opts=None):
-        'simple list of managed files for the current host'
-
-        leafs = self.extract_host_leafs()
-        for k in leafs.keys():
-            for f in leafs[k]:
-                if k == '':
-                    print f
-                else:
-                    print k + ': ' + f
-
+        
 if __name__ == '__main__':
     app = adm_config(job_class=gentoo.job.job,
                       ui_class=ui)

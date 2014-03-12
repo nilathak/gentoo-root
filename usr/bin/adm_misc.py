@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # ====================================================================
 # Copyright (c) Hannes Schweizer <hschweizer@gmx.net>
 #
@@ -17,142 +17,138 @@ import gentoo.ui
 import pylon.base
 
 class ui(gentoo.ui.ui):
-    def cleanup(self):
-        super(ui, self).cleanup(self.opts.type)
-
-    def configure(self):
-        super(ui, self).configure()
-        self.parser.add_option('-t', '--type', type='string',
-                               help=self.extract_doc_strings())
-        self.parser.add_option('-f', '--force', action='store_true')
-        self.parser.add_option('-o', '--options', type='string')
-
-    def validate(self):
-        super(ui, self).validate()
-        if not self.opts.type:
-            raise self.owner.exc_class('specify the type of operation')
+    def __init__(self, owner):
+        super().__init__(owner)
+        self.parser_common.add_argument('-o', '--options',
+                                        help='pass custom string to operations')
+        self.init_op_parser()
+        self.parser_router.add_argument('-f', '--force', action='store_true')
 
 class adm_misc(pylon.base.base):
     'container script for misc admin tasks'
 
     def run_core(self):
-        getattr(self, self.__class__.__name__ + '_' + self.ui.opts.type)(self.ui.opts.options)
+        getattr(self, self.__class__.__name__ + '_' + self.ui.args.op)()
 
-    def adm_misc_router(self, opts):
+    def adm_misc_router(self):
         # ====================================================================
         'mount router image for local administration, rsync to router when finished'
 
-        def makedirs_if_missing(path):
-            try:
-                os.makedirs(path)
-            except OSError as exc:
-                import errno
-                if exc.errno == errno.EEXIST:
-                    pass
-                else:
-                    reraise()
+        # FIXME
+        pass
+    #    def makedirs_if_missing(path):
+    #        try:
+    #            os.makedirs(path)
+    #        except OSError as exc:
+    #            import errno
+    #            if exc.errno == errno.EEXIST:
+    #                pass
+    #            else:
+    #                # FIXME be careful about PYTHON3 compatibility
+    #                reraise()
+    # 
+    #    router_proj = '/mnt/work/projects/router'
+    #    router_root = '/tmp/router'
+    #    image = os.path.join(router_proj, 'router.img')
+    #    router = 'belial'
+    #    rsync_exclude = (
+    #                     '--exclude="/boot/grub/"',  # install & configure locally
+    #                     '--exclude="/dev/"',
+    #                     '--exclude="/etc/mtab"',  # keep local mount table
+    #                     '--exclude="/proc/"',
+    #                     '--exclude="/run/"',
+    #                     '--exclude="/sys/"',
+    #                     '--exclude="/tmp/"',
+    #                     '--exclude="/var/cache/"',
+    #                     '--exclude="/var/lib/"',
+    #                     '--exclude="/var/log/"',
+    #                     '--exclude="/var/spool/"',
+    #                    )
+    #    bind_map = (
+    #        # host                      router
+    #        ('/dev', '/dev'),
+    #        ('/mnt', '/mnt'),
+    #        # timeout issue when umounting 3 nfs mounts in a row => really needed for belial?
+    #        #('/mnt/software/linux', '/mnt/software/linux'),  # needed for exec rights
+    #        #('/mnt/work/projects', '/mnt/work/projects'),  # needed for exec rights
+    #        ('/proc', '/proc'),
+    #        ('/sys', '/sys'),
+    #        ('/usr/portage', '/usr/portage'),  # remove with new CF card
+    #        ('/usr/src/linux', '/usr/src/linux'),  # remove with new CF card
+    #        ('/var/cache/edb', '/var/cache/edb'),  # remove with new CF card
+    #        ('/tmp', '/tmp'),
+    #        ('/tmp', '/var/tmp/portage'),  # remove with new CF card
+    #        )
+    # 
+    #    # first instance does mounting
+    #    makedirs_if_missing(router_root)
+    #    try:
+    #        self.dispatch('mount | grep ' + router_root,
+    #                      output=None, passive=True)
+    #    except self.exc_class:
+    #        self.dispatch('mount -o loop ' + image + ' ' + router_root,
+    #                      output='stderr')
+    #        for (src, dest) in bind_map:
+    #            makedirs_if_missing(src)
+    #            self.dispatch('mount -o bind %s %s' % (src, os.path.join(router_root, dest.strip('/'))),
+    #                          output='stderr')
+    # 
+    #    self.ui.info('Entering the router chroot...')
+    #    if opts:
+    #        opts = "c '%s'" % opts
+    #    else:
+    #        opts = ''
+    #    try:
+    #        self.dispatch("env -i HOME=$HOME TERM=$TERM linux32 chroot %s /bin/bash -l%s" % (router_root, opts),
+    #                      output='nopipes')
+    #    except self.exc_class:
+    #        self.ui.warning('chroot shell exited with error status (last cmd failed?)')
+    #    self.ui.info('Leaving the router chroot...')
+    # 
+    #    # last instance does umounting
+    #    if len([x for x in self.dispatch('ps aux | grep adm_misc.py',
+    #                                     output=None,
+    #                                     passive=True).stdout if x.find('t router') != -1]) == 1:
+    #        for (src, dest) in reversed(bind_map):
+    #            self.dispatch('umount ' + os.path.join(router_root, dest.strip('/')),
+    #                          output='stderr')
+    # 
+    #        self.ui.info('Syncing changes to embedded device...')
+    #        try:
+    #            try:
+    #                self.dispatch('ping ' + router + ' -c 1',
+    #                              output='stderr')
+    #                dry_run = 'n'
+    #                if self.ui.args.force:
+    #                    dry_run = ''
+    #                try:
+    #                    self.dispatch('rsync -aHv' + dry_run + ' --delete ' + router_root + '/ ' + router + ':/ ' + ' '.join(rsync_exclude),
+    #                                  output='both')
+    #                    if not self.ui.args.force:
+    #                        self.ui.info('The router files above will be lost after the rsync! OK? Use the force then ;)...')
+    #                    else:
+    #                        self.ui.info('Updating grub in native environment...')
+    #                        self.dispatch('ssh %s grub-install /dev/sda' % (router),
+    #                                      output='both')
+    #                        self.dispatch('ssh %s grub-mkconfig -o /boot/grub/grub.cfg' % (router),
+    #                                      output='both')
+    #                except self.exc_class:
+    #                    self.ui.warning('Something went wrong during the sync process...')
+    #            except self.exc_class:
+    #                self.ui.warning('Embedded device is offline, changes are NOT synced...')
+    #        finally:
+    #            self.dispatch('umount ' + router_root,
+    #                          output='stderr')
+    #    else:
+    #        self.ui.warning('No other router chroot environment should be open while doing rsync, close them...')
 
-        router_proj = '/mnt/work/projects/router'
-        router_root = '/tmp/router'
-        image = os.path.join(router_proj, 'router.img')
-        router = 'belial'
-        rsync_exclude = (
-                         '--exclude="/boot/grub/"',  # install & configure locally
-                         '--exclude="/dev/"',
-                         '--exclude="/etc/mtab"',  # keep local mount table
-                         '--exclude="/proc/"',
-                         '--exclude="/run/"',
-                         '--exclude="/sys/"',
-                         '--exclude="/tmp/"',
-                         '--exclude="/var/cache/"',
-                         '--exclude="/var/lib/"',
-                         '--exclude="/var/log/"',
-                         '--exclude="/var/spool/"',
-                        )
-        bind_map = (
-            # host                      router
-            ('/dev', '/dev'),
-            ('/mnt', '/mnt'),
-            ('/mnt/software/linux', '/mnt/software/linux'),  # needed for exec rights
-            ('/mnt/work/projects', '/mnt/work/projects'),  # needed for exec rights
-            ('/proc', '/proc'),
-            ('/sys', '/sys'),
-            ('/usr/portage', '/usr/portage'),  # remove with new CF card
-            ('/usr/src/linux', '/usr/src/linux'),  # remove with new CF card
-            ('/var/cache/edb', '/var/cache/edb'),  # remove with new CF card
-            ('/tmp', '/tmp'),
-            ('/tmp', '/var/tmp/portage'),  # remove with new CF card
-            )
-
-        # first instance does mounting
-        makedirs_if_missing(router_root)
-        try:
-            self.dispatch('mount | grep ' + router_root,
-                          output=None, passive=True)
-        except self.exc_class:
-            self.dispatch('mount -o loop ' + image + ' ' + router_root,
-                          output='stderr')
-            for (src, dest) in bind_map:
-                makedirs_if_missing(src)
-                self.dispatch('mount -o bind %s %s' % (src, os.path.join(router_root, dest.strip('/'))),
-                              output='stderr')
-
-        self.ui.info('Entering the router chroot...')
-        if opts:
-            opts = "c '%s'" % opts
-        else:
-            opts = ''
-        try:
-            self.dispatch("env -i HOME=$HOME TERM=$TERM linux32 chroot %s /bin/bash -l%s" % (router_root, opts),
-                          output='nopipes')
-        except self.exc_class:
-            self.ui.warning('chroot shell exited with error status (last cmd failed?)')
-        self.ui.info('Leaving the router chroot...')
-
-        # last instance does umounting
-        if len([x for x in self.dispatch('ps aux | grep adm_misc.py',
-                                         output=None,
-                                         passive=True).stdout if x.find('t router') != -1]) == 1:
-            for (src, dest) in reversed(bind_map):
-                self.dispatch('umount ' + os.path.join(router_root, dest.strip('/')),
-                              output='stderr')
-
-            self.ui.info('Syncing changes to embedded device...')
-            try:
-                try:
-                    self.dispatch('ping ' + router + ' -c 1',
-                                  output='stderr')
-                    dry_run = 'n'
-                    if self.ui.opts.force:
-                        dry_run = ''
-                    try:
-                        self.dispatch('rsync -aHv' + dry_run + ' --delete ' + router_root + '/ ' + router + ':/ ' + ' '.join(rsync_exclude),
-                                      output='both')
-                        if not self.ui.opts.force:
-                            self.ui.info('The router files above will be lost after the rsync! OK? Use the force then ;)...')
-                        else:
-                            self.ui.info('Updating grub in native environment...')
-                            self.dispatch('ssh %s grub-install /dev/sda' % (router),
-                                          output='both')
-                            self.dispatch('ssh %s grub-mkconfig -o /boot/grub/grub.cfg' % (router),
-                                          output='both')
-                    except self.exc_class:
-                        self.ui.warning('Something went wrong during the sync process...')
-                except self.exc_class:
-                    self.ui.warning('Embedded device is offline, changes are NOT synced...')
-            finally:
-                self.dispatch('umount ' + router_root,
-                              output='stderr')
-        else:
-            self.ui.warning('No other router chroot environment should be open while doing rsync, close them...')
-
-    def adm_misc_wake(self, opts):
+    def adm_misc_wake(self):
         # ====================================================================
         'wake hosts via wake-on-lan (give hostname via options switch)'
         mac_dict = {'baal':   '00:13:D4:06:88:B6',
                     'diablo': '00:14:6C:32:CA:1B'
                     }
-        host = opts
+        host = self.ui.args.options
 
         for i in range(0, 10):
             try:
@@ -185,7 +181,7 @@ class adm_misc(pylon.base.base):
                 else:
                     ev.set()
 
-    def adm_misc_check_rights(self, opts):
+    def adm_misc_check_rights(self):
         # ====================================================================
         'set access rights on fileserver'
 
@@ -241,13 +237,13 @@ class adm_misc(pylon.base.base):
             for f in copy.copy(files):
                 if os.path.join(root, f) in file_exceptions:
                     files.remove(f)
-            if not self.ui.opts.dry_run:
+            if not self.ui.args.dry_run:
                 for d in dirs:
                     self.set_rights_dir(os.path.join(root, d), owner, group, dirmask)
                 for f in files:
                     self.set_rights_file(os.path.join(root, f), owner, group, filemask)
 
-#    def media_pdf(self, opts=None):
+#    def media_pdf(self):
 #        'embed OCR text in scanned PDF file'
 #
 #        if not opts:
@@ -285,11 +281,12 @@ class adm_misc(pylon.base.base):
 #            # embed media text into pdf file
 #
 
-    def adm_misc_check_audio(self, opts):
+    def adm_misc_check_audio(self):
         # ====================================================================
         'check audio metadata (low bitrates, ...)'
-        if not opts:
-            opts = '/mnt/audio'
+        walk = self.ui.args.options
+        if not walk:
+            walk = '/mnt/audio'
 
         # FIXME ignore single low bitrate if other songs in album are
         # okay, or simply ignore low bitrate VBR files
@@ -301,7 +298,7 @@ class adm_misc(pylon.base.base):
             )
         file_exceptions = (
             )
-        for root, dirs, files in os.walk(opts, onerror=lambda x: self.ui.error(str(x))):
+        for root, dirs, files in os.walk(walk, onerror=lambda x: self.ui.error(str(x))):
             for d in copy.copy(dirs):
                 if os.path.join(root, d) in dir_exceptions:
                     dirs.remove(d)
@@ -318,16 +315,17 @@ class adm_misc(pylon.base.base):
                     if bitrate < 130:
                         self.ui.warning('Low audio bitrate detected: (%-6d) %s' % (bitrate, name))
 
-    def adm_misc_check_images(self, opts):
+    def adm_misc_check_images(self):
         # ====================================================================
         'check image metadata (silently convert to xmp)'
-        if not opts:
-            opts = '/mnt/images'
+        walk = self.ui.args.options
+        if not walk:
+            walk = '/mnt/images'
 
         # - convert existing metadata to xmp, while deleting all
         #   metadata which cannot be converted to xmp.
         # - repair broken metadata structures
-        self.dispatch('exiftool -q -r -P -overwrite_original -all= "-all>xmp:all" "%s"' % (opts))
+        self.dispatch('exiftool -q -r -P -overwrite_original -all= "-all>xmp:all" "%s"' % (walk))
 
         # - renaming for scanned images:
         #   rename files according to creationdate -> even ok for
@@ -349,12 +347,12 @@ class adm_misc(pylon.base.base):
             '/mnt/images/fun',
             '/mnt/images/private',
             )
-        for root, dirs, files in os.walk(opts, onerror=lambda x: self.ui.error(str(x))):
+        for root, dirs, files in os.walk(walk, onerror=lambda x: self.ui.error(str(x))):
             for d in copy.copy(dirs):
                 if os.path.join(root, d) in dir_exceptions:
                     dirs.remove(d)
             for d in dirs:
-                dir_from_album_root = os.path.join(root, d).replace(opts, '').strip('/')
+                dir_from_album_root = os.path.join(root, d).replace(walk, '').strip('/')
                 dir_wo_metachars = dir_from_album_root.replace('/', '_').replace(' ', '_')
                 self.dispatch('exiftool -q -P "-FileName<CreateDate" -d "%s_%%Y-%%m-%%d_%%H-%%M-%%S%%%%-c.%%%%e" "%s"' % (dir_wo_metachars, os.path.join(root, d)))
             # check for missing CreateDate tag
@@ -375,11 +373,12 @@ class adm_misc(pylon.base.base):
         # exiftool -r -P '-FileName<ModifyDate' -d %Y-%m-%d_%H-%M-%S%%-c.%%e <file>
 
 
-    def adm_misc_check_work(self, opts):
+    def adm_misc_check_work(self):
         # ====================================================================
         'check data consistency on work'
-        if not opts:
-            opts = '/mnt/work'
+        walk = self.ui.args.options
+        if not walk:
+            walk = '/mnt/work'
         sidecar_pdf_expected = re.compile(r'\.doc$|\.nb$|\.ppt$|\.vsd$|\.xls$', re.IGNORECASE)
         sidecar_pdf_wo_extension_expected = re.compile(r'exercise.*\.tex$', re.IGNORECASE)
         dir_exceptions = (
@@ -389,7 +388,7 @@ class adm_misc(pylon.base.base):
             )
         file_exceptions = (
             )
-        for root, dirs, files in os.walk(opts, onerror=lambda x: self.ui.error(str(x))):
+        for root, dirs, files in os.walk(walk, onerror=lambda x: self.ui.error(str(x))):
             for d in copy.copy(dirs):
                 if os.path.join(root, d) in dir_exceptions:
                     dirs.remove(d)
@@ -403,7 +402,7 @@ class adm_misc(pylon.base.base):
                     sidecar_pdf_wo_extension_expected.search(f) and not sidecar_wo_extension in files):
                     self.ui.warning('Sidecar PDF expected for: ' + os.path.join(root, f))
 
-    def adm_misc_check_ssd(self, opts):
+    def adm_misc_check_ssd(self):
         # ====================================================================
         'check various SSD health parameters'
         ssd_mount_points = (
@@ -412,7 +411,7 @@ class adm_misc(pylon.base.base):
         for mp in ssd_mount_points:
             self.dispatch('/sbin/fstrim -v ' + mp)
 
-    def adm_misc_check_filetypes(self, opts):
+    def adm_misc_check_filetypes(self):
         # ====================================================================
         'check for expected/unexpected filetypes on fileserver'
         allowed = {
@@ -440,11 +439,12 @@ class adm_misc(pylon.base.base):
                     if not allowed[k].search(name):
                         self.ui.warning('Unexpected filetype detected: ' + name)
 
-    def adm_misc_check_filenames(self, opts):
+    def adm_misc_check_filenames(self):
         # ====================================================================
         'check for names incompatible with other filesystems'
-        if not opts:
-            opts = '/mnt'
+        walk = self.ui.args.options
+        if not walk:
+            walk = '/mnt'
         ntfs_exceptions = re.compile(r'\0|\\|:|\*|\?|"|<|>|\|')
         dir_exceptions = (
             '/mnt/audio/0_sort',
@@ -457,7 +457,7 @@ class adm_misc(pylon.base.base):
             )
         file_exceptions = (
             )
-        for root, dirs, files in os.walk(opts, onerror=lambda x: self.ui.error(str(x))):
+        for root, dirs, files in os.walk(walk, onerror=lambda x: self.ui.error(str(x))):
             for d in copy.copy(dirs):
                 if os.path.join(root, d) in dir_exceptions:
                     dirs.remove(d)
@@ -476,7 +476,7 @@ class adm_misc(pylon.base.base):
                 if lower_dict[name.lower()] > 1:
                     self.ui.warning('Filesystem objects only distinguished by case: ' + os.path.join(root, name))
 
-    def adm_misc_check_raid(self, opts):
+    def adm_misc_check_raid(self):
         # ====================================================================
         'check for bad blocks on raid'
 
@@ -491,7 +491,7 @@ class adm_misc(pylon.base.base):
         # FIXME poll /proc/mdstat until completion, then
         # report /sys/block/md*/md/mismatch_cnt
 
-    def adm_misc_shutdown_server(self, opts):
+    def adm_misc_shutdown_server(self):
         # ====================================================================
         'shutdown server if all clients have disconnected'
 
@@ -528,8 +528,9 @@ class adm_misc(pylon.base.base):
                 return False
         return True
 
-    def adm_misc_graphtool(self, opts):
+    def adm_misc_graphtool(self):
         # FIXME
+        # ====================================================================
         # - test graph_tool.topology.is_DAG
 
         import graph_tool.all as gt
