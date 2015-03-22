@@ -31,4 +31,4 @@ fsck_on_battery="YES"
 # shutdown rather than at next boot.
 # This is useful when periodic filesystem checks are causing undesirable
 # delays at startup, but such delays at shutdown are acceptable.
-fsck_shutdown="YES"
+fsck_shutdown="NO"

@@ -25,7 +25,7 @@ shopt -s histappend
 
 # Change the window title of X terminals 
 case ${TERM} in
-	xterm*|rxvt*|Eterm*|aterm|kterm|gnome*|interix)
+	xterm*|rxvt*|Eterm*|aterm|kterm|gnome*|interix|konsole*)
 		PROMPT_COMMAND='echo -ne "\033]0;${USER}@${HOSTNAME%%.*}:${PWD/#$HOME/~}\007"'
 		;;
 	screen*)
@@ -80,7 +80,3 @@ fi
 
 # Try to keep environment pollution down, EPA loves us.
 unset use_color safe_term match_lhs
-
-[[ -f /usr/bin/keychain ]] && [[ -f ~/.ssh/id_dsa ]] \
-   && /usr/bin/keychain -q --lockwait 1 ~/.ssh/id_dsa 2> /dev/null \
-   && source ~/.keychain/$HOSTNAME-sh > /dev/null
