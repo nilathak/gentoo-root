@@ -8,116 +8,50 @@
 # any later version.
 # ====================================================================
 
-# module settings
-rsync_excludes = '--exclude="/dev/" --exclude="/lost+found/" --exclude="/proc/" --exclude="/sys/" --exclude="/tmp/" --exclude="/var/tmp/"'
-
 transfer_engines = (
-    'dd',
-    #'git',       # deprecated, not feasable
-    #'rdiff',     # will be replaced by snapshot facility of btrfs
+    'btrfs',
+    #'dd',        # deprecated, FIXME replac by ntfsclone
+    #'rdiff',     # deprecated, replaced by btrfs
     'rsync',
-    #'snapshot',  # deprecated
     'unison',
     )
 
 auto_tasks = {
-    'baal': (
-        #('/mnt/audio/',
-        # '/mnt/work/projects/backup/audio/rdiff/',
-        # 'rdiff', ''),
-        #('/mnt/docs/',
-        # '/mnt/work/projects/backup/docs/rdiff/',
-        # 'rdiff', ''),
-        #('/mnt/games/',
-        # '/mnt/work/projects/backup/games/rdiff/',
-        # 'rdiff', ''),
-        #('/mnt/images/',
-        # '/mnt/work/projects/backup/images/rdiff/',
-        # 'rdiff', ''),
-        #('/mnt/software/',
-        # '/mnt/work/projects/backup/software/rdiff/',
-        # 'rdiff', ''),
-        #('/mnt/video/',
-        # '/mnt/work/projects/backup/video/rdiff/',
-        # 'rdiff', '--exclude="/mnt/video/0_sort/" --exclude="/mnt/video/movies/" --exclude="/mnt/video/porn/" --exclude="/mnt/video/series/"'),
-        #('/mnt/work/',
-        # '/mnt/work/projects/backup/work/rdiff/',
-        # 'rdiff', '--exclude="/mnt/work/projects/backup/"'),
-
-        # enabling these will blow the inode limit on the raid
-        # ext3 system. once again -> wait for btrfs snapshots
-        #('/mnt/work/projects/backup/baal/rsync/',
-        # '/mnt/work/projects/backup/baal/rdiff/',
-        # 'rdiff', ''),
-        #('/mnt/work/projects/backup/diablo/rsync/',
-        # '/mnt/work/projects/backup/diablo/rdiff/',
-        # 'rdiff', ''),
-
-        # simplify! wait for decent snapshot filesystem...
-        #('/mnt/work/projects/backup/diablo_win/dd/',
-        # '/mnt/work/projects/backup/diablo_win/rdiff/',
-        # 'rdiff', ''),
-        #('/mnt/work/projects/backup/mephisto_win/dd/',
-        # '/mnt/work/projects/backup/mephisto_win/rdiff/',
-        # 'rdiff', ''),
-
-        ('/',
-         '/mnt/work/projects/backup/baal/rsync/',
-         'rsync', rsync_excludes),
-        ),
-
     'diablo': (
-        #('/dev/sda3',
-        # '/mnt/work/projects/backup/diablo_win/dd/',
-        # 'dd', ''),
-        ('/',
-         '/mnt/work/projects/backup/diablo/rsync/',
-         'rsync', rsync_excludes),
-        ),
+        ('/mnt/work/projects/backup/cache/diablo',
+         '/mnt/work/projects/backup/cache',
+         'btrfs', '10h10d'),
+        #('/mnt/work/projects/backup/cache/diablo',
+        # '/mnt/work/projects/backup/pool',
+        # 'btrfs', '6m1y'),
 
+        #('/mnt/work/projects/backup/pool/games',
+        # '/mnt/work/projects/backup/pool',
+        # 'btrfs', '6m'),
+        #('/mnt/work/projects/backup/pool/video',
+        # '/mnt/work/projects/backup/pool',
+        # 'btrfs', '6m'),
+
+        # external backup
+        ('/mnt/work/projects/backup/cache/diablo.2*',
+         '/mnt/work/projects/backup',
+         'btrfs', ''),
+        #('/mnt/work/projects/backup/pool/diablo*',
+        # '/mnt/work/projects/backup/extpool',
+        # 'btrfs', 'clone'),
+    ),
+    
     }
 
 manual_tasks = {
-    'baal': (
-        ('/mnt/audio/',
-         '/tmp/backup/audio/unison/',
-         'unison', '-batch'),
-        #('/mnt/docs/',
-        # '/tmp/backup/docs/unison/',
-        # 'unison', '-batch'),
-        ('/mnt/games/',
-         '/tmp/backup/games/unison/',
-         'unison', '-batch'),
-        #('/mnt/images/',
-        # '/tmp/backup/images/unison/',
-        # 'unison', '-batch'),
-        ('/mnt/software/',
-         '/tmp/backup/software/unison/',
-         'unison', '-batch'),
-        ('/mnt/video/',
-          '/tmp/backup/video/unison/',
-         'unison', '-batch -ignore "Path movies" -ignore "Path 0_sort"'),
-        #('/mnt/work/',
-        # '/tmp/backup/work/unison/',
-        # 'unison', '-batch -ignore "Path projects/backup"'),
-
-        # export baal system (for remote backup purposes)
-        ('/mnt/work/projects/backup/baal/rsync/',
-         '/tmp/backup/baal/rsync/',
-         'rsync', ''),
-
-        # export diablo system (for remote backup purposes)
-        #('/mnt/work/projects/backup/diablo_win/dd/',
-        # '/tmp/backup/diablo_win/dd/',
-        # 'rsync', ''),
-        ('/mnt/work/projects/backup/diablo/rsync/',
-         '/tmp/backup/diablo/rsync/',
-         'rsync', ''),
+    'diablo': (
+        # unison example
+        #('/mnt/video/',
+        # '/tmp/backup/video/unison/',
+        # 'unison', '-batch -ignore "Path movies" -ignore "Path 0_sort"'),
         ),
-    'diablo': (),
     }
 
-# module imports
 import os
 import gentoo.job
 import gentoo.ui
@@ -127,20 +61,21 @@ class ui(gentoo.ui.ui):
     def __init__(self, owner):
         super().__init__(owner)
 
-        import argparse
-        def validate_engine(x):
-            if x not in transfer_engines:
-                raise argparse.ArgumentTypeError('unknown backup engine')
-            return x
-
         self.parser_common.add_argument('-s','--src',
                                         help='do not loop all tasks, specify src of single task')
-        self.parser_common.add_argument('-e','--engine', type=validate_engine,
+        self.parser_common.add_argument('-e','--engine',
                                         help='use a specific backup engine')
         self.init_op_parser()
         self.parser_modify.add_argument('-o','--options',
                                         help='pass custom string to backup module')
 
+    def setup(self):
+        super().setup()
+        if not self.args.op:
+            raise self.owner.exc_class('Specify at least one subcommand operation')
+        if self.args.engine and self.args.engine not in transfer_engines:
+            raise self.owner.exc_class('unknown backup engine ' + self.args.engine)
+        
 class adm_backup(pylon.base.base):
     'container script for all backup related admin tasks'
 
@@ -155,31 +90,26 @@ class adm_backup(pylon.base.base):
         getattr(self, self.__class__.__name__ + '_' + self.ui.args.op)()
         self.ui.info(self.ui.args.op + ' took ' + str(datetime.datetime.now() - t1) + ' to complete...')
 
-    def lock_dest(self, dest_path):
-        # check if another backup process is already active
-        lock_path = os.path.normpath(dest_path.rstrip('/') + '.locked')
-        if os.path.exists(lock_path):
-            raise self.exc_class('destination %s already locked' % dest_path)
+    def do(self, src_path, dest_path, opts, cmd):
 
         # lock backup dest to prevent overlapping backup
-        # processes. race conditions during creation of this dir would
-        # surface as exception.
+        import hashlib
+        lock_path = '/tmp/' + self.__class__.__name__ + hashlib.md5(src_path + dest_path).hexdigest()
         try:
             os.makedirs(lock_path)
-        except Exception:
-            raise self.exc_class('perhaps another backup process locked faster?')
-        return lock_path
+        except OSError:
+            raise self.exc_class('backup to {0} is already locked'.format(dest_path))
 
-    def unlock_dest(self, lock_path):
-        os.rmdir(lock_path)
-
-    def lock(self, src_path, dest_path, opts, cmd):
-        lock_path = self.lock_dest(dest_path)
+        # remove lock dir in every case
         try:
             cmd(src_path, dest_path, opts)
         finally:
-            self.unlock_dest(lock_path)
+            os.rmdir(lock_path)
 
+    def selected(self, engine, src):
+        return ((not self.ui.args.engine or self.ui.args.engine == engine) and
+                (not self.ui.args.src    or self.ui.args.src == src))
+            
     def adm_backup_pre(self):
         'perform host-specific preprocessing'
         if hasattr(self, self.ui.hostname + '_pre'):
@@ -193,12 +123,18 @@ class adm_backup(pylon.base.base):
     def adm_backup_auto(self):
         'perform host-specific automatic tasks'
         for (src, dest, engine, opts) in auto_tasks[self.ui.hostname]:
-            if ((not self.ui.args.engine or
-                 self.ui.args.engine == engine) and
-                (not self.ui.args.src or
-                 self.ui.args.src == src)):
+            if (self.selected(engine, src)):
                 self.dispatch(lambda src=src,dest=dest,opts=opts,engine=engine:
-                              self.lock(src, dest, opts, getattr(self, engine).do),
+                              self.do(src, dest, opts, getattr(self, engine).do),
+                              blocking=False)
+        self.join()
+
+    def adm_backup_manual(self):
+        'perform host-specific manual tasks'
+        for (src, dest, engine, opts) in manual_tasks[self.ui.hostname]:
+            if (self.selected(engine, src)):
+                self.dispatch(lambda src=src,dest=dest,opts=opts,engine=engine:
+                              self.do(src, dest, opts, getattr(self, engine).do),
                               blocking=False)
         self.join()
 
@@ -207,11 +143,16 @@ class adm_backup(pylon.base.base):
         tasks = list(auto_tasks[self.ui.hostname])
         tasks.extend(manual_tasks[self.ui.hostname])
         for (src, dest, engine, opts) in tasks:
-            if ((not self.ui.args.engine or
-                 self.ui.args.engine == engine) and
-                (not self.ui.args.src or
-                 self.ui.args.src == src)):
-                self.lock(src, dest, opts, getattr(self, engine).info)
+            if (self.selected(engine, src)):
+                self.do(src, dest, opts, getattr(self, engine).info)
+
+    def adm_backup_modify(self):
+        'modify specified tasks'
+        tasks = list(auto_tasks[self.ui.hostname])
+        tasks.extend(manual_tasks[self.ui.hostname])
+        for (src, dest, engine, opts) in tasks:
+            if (self.selected(engine, src)):
+                self.do(src, dest, opts, getattr(self, engine).modify)
 
     def adm_backup_list(self):
         'display list of configured backup tasks'
@@ -221,54 +162,29 @@ class adm_backup(pylon.base.base):
         self.ui.info('Manual tasks:')
         pprint.pprint(manual_tasks)
 
-    def adm_backup_modify(self):
-        'modify specified tasks'
-        tasks = list(auto_tasks[self.ui.hostname])
-        tasks.extend(manual_tasks[self.ui.hostname])
-        for (src, dest, engine, opts) in tasks:
-            if ((not self.ui.args.engine or
-                 self.ui.args.engine == engine) and
-                (not self.ui.args.src or
-                 self.ui.args.src == src)):
-                self.lock(src, dest, opts, getattr(self, engine).modify)
-
-    def adm_backup_manual(self):
-        'perform host-specific manual tasks'
-        for (src, dest, engine, opts) in manual_tasks[self.ui.hostname]:
-            if ((not self.ui.args.engine or
-                 self.ui.args.engine == engine) and
-                (not self.ui.args.src or
-                 self.ui.args.src == src)):
-                self.dispatch(lambda src=src,dest=dest,opts=opts,engine=engine:
-                              self.lock(src, dest, opts, getattr(self, engine).do),
-                              blocking=False)
-        self.join()
-
-    def baal_pre(self):
-        # backup drive was encrypted as follows:
-        # cryptsetup -c aes-xts-plain -y -s 512 luksFormat /dev/sdh1
-        # mkfs.ext3 -m0 -I 128 /dev/mapper/backup
-        self.ui.debug('Mounting LUKS backup drive...')
-        self.dispatch('cryptsetup luksOpen /dev/sdh1 backup',
-                      output='both')
-        self.dispatch('mount /dev/mapper/backup /media/backup',
-                      output='both')
-        try:
-            self.dispatch('mkdir /tmp/backup',
-                          output=None)
-        except self.exc_class:
-            pass
-        self.dispatch('mount -o bind /media/backup/data /tmp/backup',
-                      output='both')
-
-    def baal_post(self):
-        self.ui.debug('Unmounting LUKS backup drive...')
-        self.dispatch('umount /tmp/backup',
-                      output='both')
-        self.dispatch('umount /media/backup',
-                      output='both')
-        self.dispatch('cryptsetup luksClose backup',
-                      output='both')
+    # FIXME
+    #def baal_pre(self):
+    #    self.ui.debug('Mounting LUKS backup drive...')
+    #    self.dispatch('cryptsetup luksOpen /dev/sdh1 backup',
+    #                  output='both')
+    #    self.dispatch('mount /dev/mapper/backup /media/backup',
+    #                  output='both')
+    #    try:
+    #        self.dispatch('mkdir /tmp/backup',
+    #                      output=None)
+    #    except self.exc_class:
+    #        pass
+    #    self.dispatch('mount -o bind /media/backup/data /tmp/backup',
+    #                  output='both')
+    # 
+    #def baal_post(self):
+    #    self.ui.debug('Unmounting LUKS backup drive...')
+    #    self.dispatch('umount /tmp/backup',
+    #                  output='both')
+    #    self.dispatch('umount /media/backup',
+    #                  output='both')
+    #    self.dispatch('cryptsetup luksClose backup',
+    #                  output='both')
 
 if __name__ == '__main__':
     app = adm_backup(job_class=gentoo.job.job,
