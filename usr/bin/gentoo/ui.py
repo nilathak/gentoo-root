@@ -37,8 +37,6 @@ class ui(pylon.ui.ui):
         # hooray, more emails (alias needs to be set)...
         self._message_server = 'root@localhost'
 
-        self.parser.add_argument('--hostname', action='store', default=socket.gethostname(),
-                                 help='force specific hostname')
         self.parser.add_argument('--mail', action='store_true',
                                  help='generate additional mail report (def: root@localhost)')
 
@@ -52,7 +50,7 @@ class ui(pylon.ui.ui):
     def init_op_parser(self):
         # define operation subparsers with common options if class methods
         # with specific prefix are present
-        ops_pattern = re.compile('^%s_(.*)' % (self._owner.__class__.__name__))
+        ops_pattern = re.compile('^{0}_(.*)'.format(self._owner.__class__.__name__))
         ops = [x for x in map(ops_pattern.match, dir(self._owner)) if x != None]
         if ops:
             subparsers = self.parser.add_subparsers(title='operations', dest='op')
@@ -67,8 +65,7 @@ class ui(pylon.ui.ui):
     def setup(self):
         super().setup()
 
-        # support forcing of hostname
-        self._hostname = self.args.hostname
+        self._hostname = socket.gethostname()
         self._fqdn = socket.getfqdn(self._hostname)
 
         self._report_subject = 'report'
@@ -80,9 +77,9 @@ class ui(pylon.ui.ui):
         if (self.args.mail and
             not self.args.dry_run and
             len(self.report_stream.getvalue()) > 0):
-            import email.MIMEText
+            from email.mime.text import MIMEText
             import smtplib
-            m = email.MIMEText.MIMEText(self.report_stream.getvalue())
+            m = MIMEText(self.report_stream.getvalue())
             m['From'] = self._owner.__class__.__name__ + '@' + self.fqdn
             m['To'] = self._message_server
             m['Subject'] = self._report_subject

@@ -175,7 +175,7 @@ output:
                 # can be caught anyway if a subprocess does not abide
                 # to standard error codes
                 if self._proc.returncode != 0:
-                    raise self._owner.exc_class('error executing "%s"' % self._cmd , self)
+                    raise self._owner.exc_class('error executing "{0}"'.format(self._cmd), self)
 
             finally:
                 devnull.close()

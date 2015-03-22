@@ -119,26 +119,11 @@ class base(object):
         self.run_core()
         self.ui.cleanup()
 
-class memoize(object):
-    def __init__(self, fn):
-        self.cache = {}
-        self.fn = fn
-    def __get__(self, instance, cls=None):
-        self.instance = instance
-        return self
-    def __call__(self,*args):
-        if args in self.cache:
-            return self.cache[args]
-        if hasattr(self, 'instance'):
-            object = self.cache[args] = self.fn(self.instance, *args)
-        else:
-            object = self.cache[args] = self.fn(*args)
-        return object
-
-def flatten(l):
-    for el in l:
-        if hasattr(el, '__iter__') and not isinstance(el, str):
-            for sub in flatten(el):
-                yield sub
-        else:
-            yield el
+    @classmethod
+    def flatten(cls, l):
+        for el in l:
+            if hasattr(el, '__iter__') and not isinstance(el, str):
+                for sub in cls.flatten(el):
+                    yield sub
+            else:
+                yield el
