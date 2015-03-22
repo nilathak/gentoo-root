@@ -8,12 +8,10 @@
 # any later version.
 # ====================================================================
 
-# module settings
-emerge_world     = 'emerge --nospinner --autounmask-keep-masks -uDNv world'
+emerge_world     = 'emerge --nospinner --autounmask-keep-masks --with-bdeps=y -uDNv world'
 emerge_depclean  = 'emerge --depclean'
 emerge_pretend   = ' -p'
 
-# module imports
 import gentoo.job
 import gentoo.ui
 import pylon.base
@@ -22,11 +20,16 @@ class ui(gentoo.ui.ui):
     def __init__(self, owner):
         super().__init__(owner)
 
-        self.parser_common.add_argument('-o','--options',
-                                        default='',
-                                        help='add additional emerge option string')
+        self.parser.add_argument('-o','--options',
+                                 default='',
+                                 help='add additional emerge option string')
         self.init_op_parser()
 
+    def setup(self):
+        super().setup()
+        if not self.args.op:
+            self.args.op = 'qr'
+        
 class adm_portage(pylon.base.base):
     'container script for all portage related admin tasks'
 
@@ -46,20 +49,9 @@ class adm_portage(pylon.base.base):
 
         self.ui.info('Syncing portage tree...')
         # =========================================================
-        self.dispatch('emerge --sync',
+        self.dispatch('emaint sync -A',
                       output='stderr')
-
-        # overlays
-        try:
-            self.dispatch('layman',
-                          output=None)
-        except self.exc_class:
-            pass
-        else:
-            self.ui.info('Syncing overlays...')
-            self.dispatch('layman --sync ALL',
-                          output='stderr')
-
+        
         self.ui.info('Updating eix cache...')
         # =========================================================
         self.dispatch('eix-update',
@@ -82,8 +74,7 @@ class adm_portage(pylon.base.base):
         self.ui.info('Performing useful emaint commands...')
         # =========================================================
         try:
-            self.dispatch('emaint -c moveinst')
-            self.dispatch('emaint -c world')
+            self.dispatch('emaint -c all')
         except self.exc_class:
             pass
 
@@ -133,16 +124,6 @@ class adm_portage(pylon.base.base):
         #try:
         self.dispatch(emerge_world + ' --keep-going ' + self.ui.args.options,
                       output='nopipes')
-        #except self.exc_class:
-        #    for it in range(1,10):
-        #        self.ui.info('emerge world has failed ' + str(it) + ' time(s), trying to restart with --skipfirst...')
-        #        try:
-        #            self.dispatch(emerge_world + ' --skipfirst ' + self.ui.args.options,
-        #                          output='nopipes')
-        #        except self.exc_class:
-        #            continue
-        #        else:
-        #            break
 
         self.ui.info('Checking for obsolete dependencies...')
         # =========================================================
