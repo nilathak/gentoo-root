@@ -8,8 +8,8 @@
 # any later version.
 # ====================================================================
 
-# module imports
 import copy
+import multiprocessing
 import os
 import re
 import gentoo.job
@@ -22,170 +22,368 @@ class ui(gentoo.ui.ui):
         self.parser_common.add_argument('-o', '--options',
                                         help='pass custom string to operations')
         self.init_op_parser()
-        self.parser_router.add_argument('-f', '--force', action='store_true')
+        self.parser_kernel.add_argument('-f', '--force', action='store_true')
+        self.parser_kernel.add_argument('--no-backup', action='store_true', help='do not overwrite keyring content with backup')
+        self.parser_kernel.add_argument('-s', '--small', action='store_true', help='skip rsync of large ISOs')
+        self.parser_wrap.add_argument('-f', '--force', action='store_true')
 
+    def setup(self):
+        super().setup()
+        if not self.args.op:
+            raise self.owner.exc_class('Specify at least one subcommand operation')
+        
 class adm_misc(pylon.base.base):
     'container script for misc admin tasks'
 
     def run_core(self):
         getattr(self, self.__class__.__name__ + '_' + self.ui.args.op)()
 
-    def adm_misc_router(self):
+    def adm_misc_kernel(self):
         # ====================================================================
-        'mount router image for local administration, rsync to router when finished'
+        'scripting stuff to build kernels'
 
+        self.dispatch('eselect kernel list', passive=True)
+        selection = input('which kernel?')
+        self.dispatch('eselect kernel set ' + selection)
+        os.chdir('/usr/src/linux')
+        self.dispatch('make -j' + str(multiprocessing.cpu_count()*2-1), output='nopipes')
+
+        # install kernel to USB keyrings
+        try:
+            self.dispatch('mkdir /tmp/keyring', output='stdout')
+        except self.exc_class:
+            pass
+        try:
+            self.dispatch('rm -rf /boot; ln -s /tmp/keyring/' + self.ui.hostname + ' /boot', output='stdout')
+        except self.exc_class:
+            pass
+
+        part = self.dispatch('findfs LABEL=KEYRING', passive=True, output=None).stdout[0]
+        dev = part[:-1]
+
+        # umount KDE mounts as well, since parallel mounts might lead to ro remounting 
+        try:
+            while True:
+                self.dispatch('umount ' + part, passive=True, output='stdout')
+        except self.exc_class:
+            pass
+
+        self.ui.info('perform automatic offline fsck')
+        try:
+            self.dispatch('fsck.vfat -a ' + part)
+        except self.exc_class:
+            pass
+
+        self.dispatch('mount ' + part + ' /tmp/keyring')
+        self.dispatch('make install')
+
+        self.ui.info('install grub modules + embed into boot sector')
+        self.dispatch('grub-install ' + dev + ' --boot-directory=/tmp/keyring/boot')
+        if not self.ui.args.no_backup:
+            self.ui.info('rsync new grub installation to keyring backup')
+            self.dispatch('rsync -a /tmp/keyring/boot /mnt/work/projects/usb_boot --exclude="/boot/grub/grub.cfg"',
+                          output='both')
+        self.ui.info('install host-specific grub.cfg (grub detects underlying device and correctly uses absolute paths to kernel images)')
+        self.dispatch('grub-mkconfig -o /boot/grub/grub.cfg')
+
+        if not self.ui.args.no_backup:
+            self.ui.info('rsync keyring backup to actual device')
+            rsync_exclude = [
+                # kernels & grub.cfgs
+                '--exclude="/diablo"',
+
+                # convenience key
+                '--exclude="/key"',
+            ]
+            rsync_exclude_small = [
+                '--exclude="/*.iso"',
+                '--exclude="/sources"',
+            ]
+            if self.ui.args.small:
+                rsync_exclude.extend(rsync_exclude_small)
+            dry_run = ''
+            if not self.ui.args.force:
+                self.ui.info('Use -f to apply sync!')
+                dry_run = 'n'
+            self.dispatch('rsync -av' + dry_run + ' --modify-window 1 --no-perms --no-owner --no-group --inplace --delete /mnt/work/projects/usb_boot/ /tmp/keyring ' + ' '.join(rsync_exclude),
+                      output='both')
+
+        try:
+            while True:
+                self.dispatch('umount ' + part, passive=True, output='stdout')
+        except self.exc_class:
+            pass
+
+        self.dispatch('rm /boot')
+        self.ui.info('Rebuild kernel modules')
+        self.dispatch('make modules_install')
+        self.dispatch('emerge @module-rebuild', output='nopipes')
+
+    def adm_misc_rotate_wpa(self):
+        # ====================================================================
+        'renew random guest access key for wlan'
         # FIXME
         pass
-    #    def makedirs_if_missing(path):
-    #        try:
-    #            os.makedirs(path)
-    #        except OSError as exc:
-    #            import errno
-    #            if exc.errno == errno.EEXIST:
-    #                pass
-    #            else:
-    #                # FIXME be careful about PYTHON3 compatibility
-    #                reraise()
-    # 
-    #    router_proj = '/mnt/work/projects/router'
-    #    router_root = '/tmp/router'
-    #    image = os.path.join(router_proj, 'router.img')
-    #    router = 'belial'
-    #    rsync_exclude = (
-    #                     '--exclude="/boot/grub/"',  # install & configure locally
-    #                     '--exclude="/dev/"',
-    #                     '--exclude="/etc/mtab"',  # keep local mount table
-    #                     '--exclude="/proc/"',
-    #                     '--exclude="/run/"',
-    #                     '--exclude="/sys/"',
-    #                     '--exclude="/tmp/"',
-    #                     '--exclude="/var/cache/"',
-    #                     '--exclude="/var/lib/"',
-    #                     '--exclude="/var/log/"',
-    #                     '--exclude="/var/spool/"',
-    #                    )
-    #    bind_map = (
-    #        # host                      router
-    #        ('/dev', '/dev'),
-    #        ('/mnt', '/mnt'),
-    #        # timeout issue when umounting 3 nfs mounts in a row => really needed for belial?
-    #        #('/mnt/software/linux', '/mnt/software/linux'),  # needed for exec rights
-    #        #('/mnt/work/projects', '/mnt/work/projects'),  # needed for exec rights
-    #        ('/proc', '/proc'),
-    #        ('/sys', '/sys'),
-    #        ('/usr/portage', '/usr/portage'),  # remove with new CF card
-    #        ('/usr/src/linux', '/usr/src/linux'),  # remove with new CF card
-    #        ('/var/cache/edb', '/var/cache/edb'),  # remove with new CF card
-    #        ('/tmp', '/tmp'),
-    #        ('/tmp', '/var/tmp/portage'),  # remove with new CF card
-    #        )
-    # 
-    #    # first instance does mounting
-    #    makedirs_if_missing(router_root)
-    #    try:
-    #        self.dispatch('mount | grep ' + router_root,
-    #                      output=None, passive=True)
-    #    except self.exc_class:
-    #        self.dispatch('mount -o loop ' + image + ' ' + router_root,
-    #                      output='stderr')
-    #        for (src, dest) in bind_map:
-    #            makedirs_if_missing(src)
-    #            self.dispatch('mount -o bind %s %s' % (src, os.path.join(router_root, dest.strip('/'))),
-    #                          output='stderr')
-    # 
-    #    self.ui.info('Entering the router chroot...')
-    #    if opts:
-    #        opts = "c '%s'" % opts
-    #    else:
-    #        opts = ''
-    #    try:
-    #        self.dispatch("env -i HOME=$HOME TERM=$TERM linux32 chroot %s /bin/bash -l%s" % (router_root, opts),
-    #                      output='nopipes')
-    #    except self.exc_class:
-    #        self.ui.warning('chroot shell exited with error status (last cmd failed?)')
-    #    self.ui.info('Leaving the router chroot...')
-    # 
-    #    # last instance does umounting
-    #    if len([x for x in self.dispatch('ps aux | grep adm_misc.py',
-    #                                     output=None,
-    #                                     passive=True).stdout if x.find('t router') != -1]) == 1:
-    #        for (src, dest) in reversed(bind_map):
-    #            self.dispatch('umount ' + os.path.join(router_root, dest.strip('/')),
-    #                          output='stderr')
-    # 
-    #        self.ui.info('Syncing changes to embedded device...')
-    #        try:
-    #            try:
-    #                self.dispatch('ping ' + router + ' -c 1',
-    #                              output='stderr')
-    #                dry_run = 'n'
-    #                if self.ui.args.force:
-    #                    dry_run = ''
-    #                try:
-    #                    self.dispatch('rsync -aHv' + dry_run + ' --delete ' + router_root + '/ ' + router + ':/ ' + ' '.join(rsync_exclude),
-    #                                  output='both')
-    #                    if not self.ui.args.force:
-    #                        self.ui.info('The router files above will be lost after the rsync! OK? Use the force then ;)...')
-    #                    else:
-    #                        self.ui.info('Updating grub in native environment...')
-    #                        self.dispatch('ssh %s grub-install /dev/sda' % (router),
-    #                                      output='both')
-    #                        self.dispatch('ssh %s grub-mkconfig -o /boot/grub/grub.cfg' % (router),
-    #                                      output='both')
-    #                except self.exc_class:
-    #                    self.ui.warning('Something went wrong during the sync process...')
-    #            except self.exc_class:
-    #                self.ui.warning('Embedded device is offline, changes are NOT synced...')
-    #        finally:
-    #            self.dispatch('umount ' + router_root,
-    #                          output='stderr')
-    #    else:
-    #        self.ui.warning('No other router chroot environment should be open while doing rsync, close them...')
 
-    def adm_misc_wake(self):
+    def adm_misc_wrap(self):
         # ====================================================================
-        'wake hosts via wake-on-lan (give hostname via options switch)'
-        mac_dict = {'baal':   '00:13:D4:06:88:B6',
-                    'diablo': '00:14:6C:32:CA:1B'
-                    }
-        host = self.ui.args.options
+        'mount wrap image for local administration'
 
-        for i in range(0, 10):
+        # FIXME
+        # - cp diablo resolv.conf to wrap image
+        # - config files
+        #   - added: package.keywords, package.mask, package.unmask, package.use, wpa_supplicant.conf
+        #   - removed: /etc/portage/profile/package.provided
+        # - source common make.conf in specific make.conf file on each machine
+        # - removed (check with cruft): emerge -C dev-vcs/mercurial net-dns/ddclient net-dns/dnsmasq net-firewall/iptables net-misc/ethercard-diag net-misc/openvpn net-wireless/hostapd net-wireless/wireless-tools sys-apps/iproute2 sys-process/fcron
+        # - installed: emerge gentoo-sources dev-vcs/git
+
+        # Notice: NX (Execute Disable) protection missing in CPU!
+        # DMI not present or invalid.
+        # raid6: mmxx1       35 MB/s
+        # raid6: mmxx2       58 MB/s
+        # raid6: int32x1     15 MB/s
+        # raid6: int32x2     23 MB/s
+        # raid6: int32x4     23 MB/s
+        # raid6: int32x8     23 MB/s
+        # raid6: using algorithm mmxx2 (58 MB/s)
+        # raid6: using intx1 recovery algorithm
+        #  
+        # rm: cannot remove /lib/rc/console/font: Read-only file system
+        # rm: cannot remove /lib/rc/console/keymap: Read-only file system
+        # rm: cannot remove /lib/rc/console/unicode: Read-only file system
+        # rm: cannot remove /tmp/tmp.BzZNzL5AYX/run/mount/utab: Read-only file system
+        #  
+        #  * Setting console font [lat9w-16] ...
+        #  [ ok ]
+        # getfont: KDFONTOP: No space left on device
+        #  
+        def makedirs_if_missing(path):
             try:
-                self.dispatch('ether-wake -i eth%i %s' % (i, mac_dict[host]),
-                              output=None)
-                self.ui.info('Sent magic packet on eth%i' % i)
-            except self.exc_class:
-                pass
-
-        import threading
-        ev = threading.Event()
-        self.dispatch(lambda host=host, ev=ev: self.wake_polling(host, ev),
-                      blocking=False)
-        self.dispatch(lambda host=host, ev=ev: self.wake_polling(host, ev, 150),
-                      blocking=False)
-        self.join()
-
-    def wake_polling(self, host, ev, timeout=None):
-        if timeout:
-            ev.wait(timeout)
-            ev.set()
-        else:
-            while not ev.is_set():
-                try:
-                    if host == 'baal':
-                        self.dispatch('showmount -e %s' % host,
-                                      output=None)
-                except self.exc_class:
+                os.makedirs(path)
+            except OSError as exc:
+                import errno
+                if exc.errno == errno.EEXIST:
                     pass
                 else:
-                    ev.set()
+                    raise exc
+     
+        image = '/mnt/work/projects/led_cube/WRAP.1E.img'
+        local = '/tmp/wrap'
+        device = 'belial'
+        rsync_exclude = (
+            '--exclude="/boot/grub/"',  # install & configure locally
+            '--exclude="/etc/resolv.conf"',  # do not interfer with dhcp on device
+            '--exclude="/etc/ssh/ssh_host*"',  # do not overwrite ssh host key
+            '--exclude="/dev/"',
+            '--exclude="/proc/"',
+            '--exclude="/run/"',
+            '--exclude="/sys/"',
+            '--exclude="/tmp/"',
+            #'--exclude="/var/cache/"',
+            # FIXME re-evaluate if it's OK to sync
+            '--exclude="/var/lib/"',
+            '--exclude="/var/log/"',
+            '--exclude="/var/spool/"',
+        )
+        bind_map = (
+            # local, device
+            ('/dev', '/dev'),
+            ('/mnt', '/mnt'),
+            # timeout issue when umounting 3 nfs mounts in a row => really needed for belial?
+            #('/mnt/software/linux', '/mnt/software/linux'),  # needed for exec rights
+            #('/mnt/work/projects', '/mnt/work/projects'),  # needed for exec rights
+            ('/proc', '/proc'),
+            ('/sys', '/sys'),
+            ('/tmp', '/tmp'),
+            )
+     
+        # first instance does mounting
+        makedirs_if_missing(local)
+        try:
+            self.dispatch('mount | grep ' + local,
+                          output=None, passive=True)
+        except self.exc_class:
+            self.dispatch('mount ' + image + ' ' + local,
+                          output='stderr')
+            for (src, dest) in bind_map:
+                makedirs_if_missing(src)
+                self.dispatch('mount -o bind {0} {1}'.format(src, os.path.join(local, dest.strip('/'))),
+                              output='stderr')
+     
+        self.ui.info('Entering the chroot...')
+
+        # run batch commands
+        opts = ''
+        if self.ui.args.options:
+            opts = "c '{0}'".format(self.ui.args.options)
+
+        try:
+            # chname for chroot hostname modification needs CONFIG_UTS_NS=y
+            self.dispatch("env -i HOME=$HOME $HOSTNAME={0} TERM=$TERM chname {0} linux32 chroot {1} /bin/bash -l{2}".format(device, local, opts),
+                          output='nopipes')
+        except self.exc_class:
+            self.ui.warning('chroot shell exited with error status (last cmd failed?)')
+        self.ui.info('Leaving the chroot...')
+     
+        # last instance does umounting
+        if len([x for x in self.dispatch('ps aux | grep adm_misc.py',
+                                         output=None,
+                                         passive=True).stdout if ' wrap' in x]) == 1:
+            for (src, dest) in reversed(bind_map):
+                self.dispatch('umount ' + os.path.join(local, dest.strip('/')),
+                              output='stderr')
+     
+            self.ui.info('Syncing changes to device...')
+            try:
+                try:
+                    self.dispatch('ping ' + device + ' -c 1',
+                                  output='stderr')
+                    dry_run = 'n'
+                    if self.ui.args.force:
+                        dry_run = ''
+                    try:
+                        self.dispatch('rsync -aHv' + dry_run + ' --delete ' + local + '/ ' + device + ':/ ' + ' '.join(rsync_exclude),
+                                      output='both')
+                        if not self.ui.args.force:
+                            self.ui.info('The device files above will be lost after the rsync! OK? Use the force then ;)...')
+                        else:
+                            self.ui.info('Updating grub in native environment...')
+                            self.dispatch('ssh {0} grub-install /dev/sda'.format(device),
+                                          output='both')
+                            self.dispatch('ssh {0} grub-mkconfig -o /boot/grub/grub.cfg'.format(device),
+                                          output='both')
+                    except self.exc_class:
+                        self.ui.warning('Something went wrong during the sync process...')
+                except self.exc_class:
+                    self.ui.warning('Device is offline, changes are NOT synced...')
+            finally:
+                self.dispatch('umount ' + local,
+                              output='stderr')
+        else:
+            self.ui.warning('No other device chroot environment should be open while doing rsync, close them...')
+
+    def adm_misc_check_ssd(self):
+        # ====================================================================
+        'periodic manual SSD maintenance'
+        ssd_mount_points = {
+            'diablo': (
+                '/',
+            ),
+        }
+        for mp in ssd_mount_points[self.ui.hostname]:
+            self.dispatch('/sbin/fstrim -v ' + mp)
+
+    def adm_misc_check_btrfs(self):
+        # ====================================================================
+        'periodic manual btrfs maintenance'
+
+        btrfs_devices = {
+            'diablo': (
+                '/dev/mapper/cache0',
+                '/dev/mapper/pool0',
+            ),
+        }
+
+        # scrubbing
+        # =========
+        # - btrfs check on unmounted filesystem only necessary if btrfs scrub shows errors
+        # - Data blocks are not duplicated unless you have RAID1 or higher, but they are checksummed
+        # - Scrub will therefore know if your metadata is corrupted and typically correct it on its own
+        # - It can also tell you if your data blocks got corrupted, auto fix them if RAID allows, or report them to you in syslog otherwise.
+        for bd in btrfs_devices[self.ui.hostname]:
+            self.dispatch('/sbin/btrfs scrub start -BR ' + bd)
+
+        # balance
+        # =======
+        # the balance command can do a lot of things (eg, also adding devices in RAID configuration),
+        # here we use it to reclaim back the space of the underused chunks so it can be allocated again according to current needs
+        # The point is to prevent some corner cases where it's not possible to allocate new metadata chunks because the whole device
+        # space is reserved for all the chunks, although the total space occupied is smaller.
+
+        # rebalancing recommended if used values are nearing total values
+        # FIXME metadata balancing is automatic in starting from 3.18, after switching to 3.18 trigger metadata balancing one more time manually
+        # Data, single: total=209.01GiB, used=186.13GiB
+        # System, DUP: total=8.00MiB, used=48.00KiB
+        # System, single: total=4.00MiB, used=0.00B
+        # Metadata, DUP: total=4.50GiB, used=2.86GiB
+        # Metadata, single: total=8.00MiB, used=0.00B
+        # GlobalReserve, single: total=512.00MiB, used=0.00B
+        
+        # ct recommended command which keeps data relocation to a minimum: btrfs balance start -musage=50 -dusage=50 <mp>
+        # if balance command bails out with ENOSPC error on a nearly full device, use -musage=0 -dusage=0 to delete unused chunks first
+
+        # stack overflow recommendation: btrfs balance start -dusage=20 <mp>
+        # https://stackoverflow.com/questions/22286618/massive-btrfs-performance-degradation
+
+        # check command duration for different -dusage percentages using: btrfs balance status
+        
+        # defrag
+        # ======
+        # A copy-on-write filesystem maintains many changes of a single file, which is helpful for snapshotting and other advanced features,
+        # but can lead to fragmentation with some workloads.
+        # If you have a virtual disk image, or a database file that gets written randomly in the middle, Copy On Write is going to cause many
+        # fragments since each write is a new fragment (eg, virtualbox images can grow 100,000 fragments quickly). You can turn off COW for specific
+        # files and directories with chattr -C /path (new files will inherit this).
+        # Do not enable autodefrag or run defrag manually on specific folders, since it will break the reflink (COW) property of snapshots
+        # within the volume to be defragged. this will practically double the space needed for each snapshot.
+
+        # OPTIONAL SPEEDUP
+        # btrfs filesystem defragment vbox.vdi could take hours
+        # cp -reflink=never vbox.vdi vbox.vdi.new; rm vbox.vdi
+        # is much faster
+
+        # defrag home folder which contains highly fragmented databases & VM images, increased space usage for 1 month worth of snapshots should be OK.
+        #btrfs_defrag_folders = {
+        #    home directory, or directory which high number of extents:
+        #    find / -xdev -type f -print0 | sed 's/\(.*\)/"\1"/' | xargs -0 filefrag | grep -v ' 0 extent' | grep -v ' 1 extent' | grep -v ' 2 extent'
+        #}
+
+    def adm_misc_spindown(self):
+        # ====================================================================
+        'force large HDD into standby mode'
+
+        import time
+        luks_uuid = 'ab45cdb1-643b-4b29-8448-f68fa65f574e'
+        mounts = (
+            '/mnt/games',
+            '/mnt/video',
+        )
+        
+        # script will be run via cron.hourly
+        for i in range(6):
+
+            self.ui.debug('checking for ongoing IO operations using a practical hysteresis')
+            try:
+                device = os.path.basename(self.dispatch('findfs UUID=' + luks_uuid,
+                                                        passive=True,
+                                                        output=None).stdout[0])
+                io_ops_1st = self.dispatch('cat /proc/diskstats | grep ' + device,
+                                           passive=True,
+                                           output=None).stdout
+            except self.exc_class:
+                raise self.exc_class("Container HDD not found!")
+            
+            # 60s buffer to next cron job
+            time.sleep(15 * 59)
+            
+            io_ops_2nd = self.dispatch('cat /proc/diskstats | grep ' + device,
+                                       passive=True,
+                                       output=None).stdout
+
+            if io_ops_1st[0] == io_ops_2nd[0]:
+                self.ui.debug('Ensure filesystem buffers are flushed')
+                for m in mounts:
+                    self.dispatch('btrfs filesystem sync ' + m,
+                                  output=None)
+                self.ui.debug('Spinning down...')
+                self.dispatch('hdparm -y /dev/' + device,
+                              output=None)
 
     def adm_misc_check_rights(self):
         # ====================================================================
         'set access rights on fileserver'
 
-        # tested also with Dropbox softlink targets
         public = (
             '/mnt/audio',
             '/mnt/docs',
@@ -227,8 +425,6 @@ class adm_misc(pylon.base.base):
             '/mnt/work/projects',
             )
         file_exceptions = (
-            '/mnt/images/private/hannes',
-            '/mnt/video/private/hannes',
             )
         for root, dirs, files in os.walk(tree, onerror=lambda x: self.ui.error(str(x))):
             for d in copy.copy(dirs):
@@ -243,43 +439,42 @@ class adm_misc(pylon.base.base):
                 for f in files:
                     self.set_rights_file(os.path.join(root, f), owner, group, filemask)
 
-#    def media_pdf(self):
-#        'embed OCR text in scanned PDF file'
-#
-#        if not opts:
-#            raise self.exc_class('give a pdf filename via -o switch')
-#        pdf_file = opts
-#        pdf_base = os.path.splitext(pdf_file)[0]
-#
-#        self.ui.ext_info('Extracting pages from scanned PDF...')
-#        self.dispatch('pdfimages %s %s' % (pdf_file, pdf_base),
-#                      output='stderr')
-#
-#        # determine list of extracted image files
-#        # FIXME
-#        # check if extracted images are in A4 format (pdfimages
-#        # does not care if a pdf was scanned or not, this may lead to
-#        # extracted logo images and such stuff)
-#        import glob
-#        images = glob.iglob('%s-[0-9]*.ppm' % pdf_base)
-#
-#        for image in images:
-#            ppm_base = os.path.splitext(image)[0]
-#            tif_file = ppm_base + '.tif'
-#
-#            self.ui.ext_info('Apply threshold to %s...' % ppm_base)
-#            # FIXME find optimal threshold value for OCR (test with
-#            # multiple pdfs)
-#            # FIXME what is this threshold value? color space?
-#            self.dispatch('convert %s -threshold 50000 %s' % (image, tif_file),
-#                          output='stderr')
-#
-#            self.dispatch('TESSDATA_PREFIX=/usr/share/ tesseract %s %s -l deu' % (tif_file, ppm_base),
-#                          output='stderr')
-#
-#            # FIXME
-#            # embed media text into pdf file
-#
+    def media_pdf(self):
+        # ====================================================================
+        'embed OCR text in scanned PDF file'
+        #
+        #if not opts:
+        #    raise self.exc_class('give a pdf filename via -o switch')
+        #pdf_file = opts
+        #pdf_base = os.path.splitext(pdf_file)[0]
+        #
+        #self.ui.ext_info('Extracting pages from scanned PDF...')
+        #self.dispatch('pdfimages {0} {1}'.format(pdf_file, pdf_base),
+        #              output='stderr')
+        #
+        ## determine list of extracted image files
+        ## FIXME check if extracted images are in A4 format (pdfimages does not care if a pdf was scanned or not, this may lead to extracted logo images and such stuff)
+        ## FIXME convert to TIF file directly using the -tiff switch of pdfimages
+        #import glob
+        #images = glob.iglob('{0}-[0-9]*.ppm'.format(pdf_base))
+        #
+        #for image in images:
+        #    ppm_base = os.path.splitext(image)[0]
+        #    tif_file = ppm_base + '.tif'
+        #
+        #    self.ui.ext_info('Apply threshold to {0}...'.format(ppm_base))
+        #    # FIXME find optimal threshold value for OCR (test with
+        #    # multiple pdfs)
+        #    # FIXME what is this threshold value? color space?
+        #    self.dispatch('convert {0} -threshold 50000 {1}'.format(image, tif_file),
+        #                  output='stderr')
+        #
+        #    self.dispatch('TESSDATA_PREFIX=/usr/share/ tesseract {0} {1} -l deu'.format(tif_file, ppm_base),
+        #                  output='stderr')
+        #
+        #    # FIXME
+        #    # embed media text into pdf file
+        #
 
     def adm_misc_check_audio(self):
         # ====================================================================
@@ -308,16 +503,24 @@ class adm_misc(pylon.base.base):
             for f in files:
                 name = os.path.join(root, f)
                 if lossy_extensions.search(name):
-                    out = self.dispatch('exiftool "%s" | grep -i "Audio Bitrate\\|Nominal Bitrate"' % name,
+                    out = self.dispatch('exiftool "{0}" | grep -ai "Audio Bitrate\\|Nominal Bitrate"'.format(name),
                                         output=None).stdout[0]
                     # ignore unit specification
-                    bitrate = float(out.split()[-2])
-                    if bitrate < 130:
-                        self.ui.warning('Low audio bitrate detected: (%-6d) %s' % (bitrate, name))
+                    try:
+                        bitrate = float(out.split()[-2])
+                        if bitrate < 130:
+                            self.ui.warning('Low audio bitrate detected: {1} ({0:-6f})'.format(bitrate, name))
+                    except Exception:
+                        self.ui.error('Bitrate extraction failed for: {0}'.format(name))
 
     def adm_misc_check_images(self):
         # ====================================================================
         'check image metadata (silently convert to xmp)'
+
+        # FIXME
+        self.ui.warning('DISABLED until properly implemented!')
+        return
+
         walk = self.ui.args.options
         if not walk:
             walk = '/mnt/images'
@@ -325,7 +528,7 @@ class adm_misc(pylon.base.base):
         # - convert existing metadata to xmp, while deleting all
         #   metadata which cannot be converted to xmp.
         # - repair broken metadata structures
-        self.dispatch('exiftool -q -r -P -overwrite_original -all= "-all>xmp:all" "%s"' % (walk))
+        self.dispatch('exiftool -q -r -P -overwrite_original -all= "-all>xmp:all" "{0}"'.format(walk))
 
         # - renaming for scanned images:
         #   rename files according to creationdate -> even ok for
@@ -354,10 +557,10 @@ class adm_misc(pylon.base.base):
             for d in dirs:
                 dir_from_album_root = os.path.join(root, d).replace(walk, '').strip('/')
                 dir_wo_metachars = dir_from_album_root.replace('/', '_').replace(' ', '_')
-                self.dispatch('exiftool -q -P "-FileName<CreateDate" -d "%s_%%Y-%%m-%%d_%%H-%%M-%%S%%%%-c.%%%%e" "%s"' % (dir_wo_metachars, os.path.join(root, d)))
+                self.dispatch('exiftool -q -P "-FileName<CreateDate" -d "{0}_%%Y-%%m-%%d_%%H-%%M-%%S%%%%-c.%%%%e" "{1}"'.format(dir_wo_metachars, os.path.join(root, d)))
             # check for missing CreateDate tag
             for f in files:
-                if len(self.dispatch('exiftool -CreateDate "%s"' % (os.path.join(root, f)),
+                if len(self.dispatch('exiftool -CreateDate "{0}"'.format(os.path.join(root, f)),
                                      None).stdout) == 0:
                     self.ui.warning('Missing CreateDate tag for: ' + os.path.join(root, f))
 
@@ -402,15 +605,6 @@ class adm_misc(pylon.base.base):
                     sidecar_pdf_wo_extension_expected.search(f) and not sidecar_wo_extension in files):
                     self.ui.warning('Sidecar PDF expected for: ' + os.path.join(root, f))
 
-    def adm_misc_check_ssd(self):
-        # ====================================================================
-        'check various SSD health parameters'
-        ssd_mount_points = (
-            '/',
-            )
-        for mp in ssd_mount_points:
-            self.dispatch('/sbin/fstrim -v ' + mp)
-
     def adm_misc_check_filetypes(self):
         # ====================================================================
         'check for expected/unexpected filetypes on fileserver'
@@ -424,6 +618,7 @@ class adm_misc(pylon.base.base):
                 '/mnt/audio/0_sort',
                 '/mnt/images/0_sort',
                 '/mnt/video/0_sort',
+                '/mnt/work/projects/backup',
                 )
             file_exceptions = (
                 )
@@ -475,105 +670,6 @@ class adm_misc(pylon.base.base):
                     self.ui.warning('NTFS incompatible filesystem object: ' + os.path.join(root, name))
                 if lower_dict[name.lower()] > 1:
                     self.ui.warning('Filesystem objects only distinguished by case: ' + os.path.join(root, name))
-
-    def adm_misc_check_raid(self):
-        # ====================================================================
-        'check for bad blocks on raid'
-
-        self.ui.info('Starting software RAID consistency check...')
-        self.dispatch('echo check >> /sys/block/md1/md/sync_action',
-                      output='stderr')
-        self.dispatch('echo check >> /sys/block/md2/md/sync_action',
-                      output='stderr')
-        self.dispatch('echo check >> /sys/block/md3/md/sync_action',
-                      output='stderr')
-
-        # FIXME poll /proc/mdstat until completion, then
-        # report /sys/block/md*/md/mismatch_cnt
-
-    def adm_misc_shutdown_server(self):
-        # ====================================================================
-        'shutdown server if all clients have disconnected'
-
-        # first measurement
-        if not self.is_server_busy():
-            # add some hysteresis to allow:
-            # - save dual booting
-            # - save fcron startup
-            import time
-            time.sleep(10 * 60)
-
-            # second measurement
-            if not self.is_server_busy():
-                self.ui.debug('LAN seems to be empty -> shutting down homeserver...')
-                self.dispatch('/sbin/shutdown -h now',
-                              output=None)
-
-    def is_server_busy(self):
-        # scan openvpn subnet as well to avoid shutdown during remote access
-        nmap_output = self.dispatch('nmap --exclude baal,belial -sP 192.168.0.0/24 10.8.0.2-255 | egrep "hosts? up" | sed "s/.*(\([0-9]*\).*/\\1/"',
-                                    passive=True,
-                                    output=None).stdout
-        # ignore failed resolution of exceptions if router is down by
-        # just evaluating last line
-        active_hosts = int(nmap_output[-1])
-        if active_hosts == 0:
-            # our LAN is empty, but first ensure we don't turn off a
-            # busy server
-            load_avg_line = self.dispatch('cat /proc/loadavg',
-                                          passive=True,
-                                          output=None).stdout[0]
-            load_5min_avg = float(load_avg_line.split()[2])
-            if load_5min_avg < 0.7:
-                return False
-        return True
-
-    def adm_misc_graphtool(self):
-        # FIXME
-        # ====================================================================
-        # - test graph_tool.topology.is_DAG
-
-        import graph_tool.all as gt
-        import random
-
-        # input
-        #################################################
-        # - merge UML communication diagrams for mission modes
-        # - generate interesting set of random graphs
-        # - UML sanity check
-        #   - loops? graph_tool.stats.label_self_loops
-        g = gt.graph_tool.generation.random_graph(16,
-                                                  lambda:(random.choice(range(0, 4)),
-                                                          random.choice(range(0, 10))),
-                                                  directed=True,
-
-                                                  # only one channel for each pair, increase capacity by new "routability" vertices
-                                                  # parallel_edges=True,
-
-                                                  verbose=True
-                                                  )
-        gt.graph_draw(g, output="/tmp/graph-draw.pdf")
-
-        # 2D mapping
-        #################################################
-        # - compare against the "ideal" case: graph_tool.topology.shortest_path
-        # - find unsuitable patterns using graph_tool.topology.subgraph_isomorphism
-        # - replace them
-        # - check if 2D mapping is done by using graph_tool.topology.is_planar
-        lattice = gt.graph_tool.generation.lattice([4, 4])
-        lattice.set_directed(True)
-        gt.graph_draw(lattice, output="/tmp/graph-lattice.pdf")
-
-        # locality optimization
-        #################################################
-        # - try graph_tool.topology.max_cardinality_matching
-        # - determine leaf nodes maybe helpful? graph_tool.topology.max_independent_vertex_set
-        # - detect routing hot-spots: graph_tool.topology.kcore_decomposition
-
-        # routability
-        #################################################
-        # - check with graph_tool.topology.transitive_closure
-        #
 
 if __name__ == '__main__':
     app = adm_misc(job_class=gentoo.job.job,
