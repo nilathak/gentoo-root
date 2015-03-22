@@ -7,36 +7,84 @@
 # the Free Software Foundation; either version 3, or (at your option)
 # any later version.
 # ====================================================================
-# thoughts about flow
-#  - start always with checked out host branch
-#  - pull in external changes only into clean working trees (redundant commits are resolved by git rebase)
-#  - host MUST NEVER be merged onto master
-#  - commit-based cherry picking from host to master tricky (commits containing host+master files need to be split)
-#  - thus, directly commit on host and master using restricted file set and interactive commit
-#  - rebasing host with remote master ensures a minimal diffset ("superimposing" files are auto-removed if no longer needed)
-#  - avoid host branches on central bare repo. GUI development mainly on master files, host branches backup done by host backup
+# WORKFLOW
+# - start always with checked out host branch
+# - add files via interactive commit dialog (add untracked)
+# - host MUST NEVER be merged onto master; PREFERABLY operate on master directly, or just cherry-pick from host to master:
+#   - commit-based cherry picking from host to master tricky (commits containing host+master files need to be split)
+#   git stash
+#   git checkout master
+#   git --no-pager log <host>
+#   git --no-pager show <commit hashes>
+#   git cherry-pick <commit hashes>
+#   git checkout <host>
+#   git rebase
+#   git stash pop
+# - rebasing host with remote master ensures a minimal diffset ("superimposing" files are auto-removed if no longer needed)
+# - avoid host branches on central bare repo. GUI development mainly on master files, host branches backup done by host backup
+# - determine if remote master can use a fast-forward merge to local master: git remote show origin
+# - if MD5 sums are equal and file is not needed anymore: checkin any pending changes, git rm in respective working tree, 
 #
-# FIXME
-#  - AARGH: additions are removed by repo reset (can be savely removed?, how to stash index?) ADD /etc/portage/cruft.d + /opt/portage
-#  - setup eclipse with new git clone
-#  - install nano as default editor => /etc/env.d/99editor found in cruft report? => add to master branch
-#  - sync new PYLON/GENTOO to DMCE + adapt essence_blender.py (opts as common positional argument?)
-#  - belial/baal:
-#    - add periodic report
-#    - replace mercurial with git in world file
+# TODO
+# - howto easily move a default file from master to specific host branches?
+# - separate portage.keywords into host and master files
+# - directly save /usr/src/linux/.config instead of /usr/src/config (wrap has its own kernel now anyway)
+# - MASTER ADD
+#   - ^/etc/portage/cruft\.d$
+#   - /opt/portage
+# - DIABLO ADD
+#   - cruft(2015-03-21 14:27:37,155) ERROR: net-dns/dnsmasq-2.72: /etc/dnsmasq.conf has incorrect MD5sum
+#   - cruft(2015-03-21 14:27:42,048) ERROR: net-misc/dhcpcd-6.6.7: /etc/dhcpcd.conf has incorrect MD5sum
+#   - cruft(2015-03-21 14:27:46,725) ERROR: net-p2p/deluge-1.3.11: /etc/conf.d/deluged has incorrect MD5sum
+#   - cruft(2015-03-21 14:27:49,138) ERROR: net-wireless/hostapd-2.3: /etc/hostapd/hostapd.wpa_psk has incorrect MD5sum
+#   - cruft(2015-03-21 14:27:49,146) ERROR: net-wireless/hostapd-2.3: /etc/hostapd/hostapd.conf has incorrect MD5sum
+#   - cruft(2015-03-21 14:28:09,532) ERROR: sys-apps/baselayout-2.2: /etc/hosts has incorrect MD5sum
+#   - cruft(2015-03-21 14:28:20,970) ERROR: sys-apps/smartmontools-6.3: /etc/smartd.conf has incorrect MD5sum
+#   - cruft(2015-03-21 14:29:46,330) ERROR: www-servers/apache-2.2.29: /etc/conf.d/apache2 has incorrect MD5sum (REALLY NEEDED???????)
+#   - cruft(2015-03-21 14:29:46,784) ERROR: x11-base/xorg-server-1.15.2-r2: /etc/conf.d/xdm has incorrect MD5sum
+#   - /etc/portage/profile/use.mask
+#   - /etc/cron.hourly/spindown
+#   - /etc/cron.monthly/report
+#   - /etc/resolv.conf.head really needed? Feb  2 03:59:00 diablo dnsmasq[2183]: ignoring nameserver 192.168.0.1 - local interface
+#   - /etc/samba/smb.conf
+#   - /etc/samba/smbpasswd
+##############################################
+
+#############FIX
+#/etc/mdadm.conf
+#belial/etc/ddclient/ddclient.conf
+###############REMOVE/REVERT
+#/etc/security/limits.conf
+#/etc/sysctl.conf
+#===================wrap-specific
+#/etc/conf.d/hostname
+#/etc/conf.d/net
+#/etc/default/grub
+#/etc/fstab
+#/etc/inittab
+#/etc/portage/make.conf
+#/etc/portage/package.keywords
+#/etc/portage/package.mask
+#/etc/portage/package.use
+#/usr/src/config
+#/var/lib/portage/world
+###########REMOVE/REVERT
+#belial/etc/portage/profile/package.provided
+#belial/etc/postfix/main.cf
+
 # ====================================================================
 
-# module settings
 repo_path = '/mnt/Dropbox/work/projects/workspace/gentoo-repo'
 hosts = [
     'diablo',
-    'baal',
     'belial',
     ]
+
+# FIXME think about git tree in projects
 # always chdir to work-tree to avoid long relative paths when using --git-dir + --work-tree and calling this script from arbitrary directory
 git_cmd = 'cd / && git '
 
-# module imports
+import functools
 import os
 import gentoo.job
 import gentoo.ui
@@ -47,12 +95,13 @@ class ui(gentoo.ui.ui):
         super().__init__(owner)
         self.init_op_parser()
         self.parser_deliver.add_argument('-s', '--skip', action='count', default=0,
-                                         help='resume deliver after manual conflict resolution (1=continue after origin/master pull, 2=continue after host rebase)')
+                                         help='resume deliver after manual conflict resolution (s=continue after origin/master pull, ss=continue after host rebase)')
 
     def setup(self):
         super().setup()
-        # validate hostname
-        if not self.hostname in hosts:
+        if not self.args.op:
+            raise self.owner.exc_class('Specify at least one subcommand operation')
+        if self.hostname not in hosts:
             raise self.owner.exc_class('unknown host ' + self.hostname)
 
 class adm_config(pylon.base.base):
@@ -61,17 +110,18 @@ class adm_config(pylon.base.base):
     def run_core(self):
         getattr(self, self.__class__.__name__ + '_' + self.ui.args.op)()
 
-    @pylon.base.memoize
+    @functools.lru_cache(typed=True)
     def host_files(self):
         self.ui.ext_info('Finding host-specific files (host-only + superimposed)...')
         host_files_actual = self.dispatch(git_cmd + 'diff origin/master ' + self.ui.hostname + ' --name-only', output=None, passive=True).stdout
+        # host branches can only modify files from master branch or add new ones
         host_files_expect = self.dispatch(git_cmd + 'diff origin/master ' + self.ui.hostname + ' --name-only --diff-filter=AM', output=None, passive=True).stdout
         host_files_unexpect = set(host_files_actual) - set(host_files_expect)
         if host_files_unexpect:
             raise self.exc_class('unexpected host-specific diff:' + os.linesep + os.linesep.join(sorted(host_files_unexpect)))
         return sorted(host_files_expect)
 
-    @pylon.base.memoize
+    @functools.lru_cache(typed=True)
     def master_files(self):
         self.ui.ext_info('Finding master-specific files (common files)...')
         all_files = self.dispatch(git_cmd + 'ls-files', output=None, passive=True).stdout
@@ -88,13 +138,17 @@ class adm_config(pylon.base.base):
 
         if self.ui.args.skip < 1:
 
+            self.ui.debug('Any staged removals?')
+            if self.dispatch(git_cmd + 'diff --cached --name-only --diff-filter=D', output=None).stdout:
+                raise self.exc_class('Checkin staged removals in respective working tree manually before deliver step')
+            
             self.ui.info('Delivering host-specific changes...')
             self.ui.debug('Ensure we start with an empty staging area')
             self.dispatch(git_cmd + 'reset', output=verbosity)
             self.ui.debug('Looping interactive commit until error code >0 => no more modifications to stage or we intentionally did not select any')
             try:
                 while True:
-                    self.dispatch(git_cmd + 'commit --interactive -uno ' + ' '.join(self.host_files()), output='nopipes')
+                    self.dispatch(git_cmd + 'commit --verbose --interactive -uno ' + ' '.join(self.host_files()), output='nopipes')
                     if self.ui.args.dry_run:
                         break
             except self.exc_class:
@@ -104,14 +158,13 @@ class adm_config(pylon.base.base):
             self.dispatch(git_cmd + 'stash save', output=verbosity)
             self.dispatch(git_cmd + 'stash branch master', output=verbosity)
             self.ui.info('Delivering master-specific changes...')
-            self.ui.debug('Ensure we start with an empty staging area')
-            self.dispatch(git_cmd + 'reset', output=verbosity)
             try:
                 while True:
-                    self.dispatch(git_cmd + 'commit --interactive --no-status -uno ' + ' '.join(self.master_files()), output='nopipes')
+                    self.dispatch(git_cmd + 'commit --verbose --interactive -uno ' + ' '.join(self.master_files()), output='nopipes')
                     if self.ui.args.dry_run:
                         break
-            except self.exc_class:
+            # continue to clean up in case KeyboardInterrupt occurs
+            except BaseException:
                 pass
 
             self.ui.debug('Save any unstaged modifications we do not want to commit anywhere yet (host- or master-specific)')
@@ -158,6 +211,16 @@ class adm_config(pylon.base.base):
         for f in self.list_repo():
             print(f)
 
+    def adm_config_list_branches(self):
+        'list managed files of master and host branch'
+        self.ui.info('Listing host-specific files:')
+        for f in self.host_files():
+            print(f)
+
+        self.ui.info('Listing master-specific files:')
+        for f in self.master_files():
+            print(f)
+
     def adm_config_md5(self):
         'check if portage md5 equals git-controlled file => can be removed from git'
 
@@ -181,9 +244,9 @@ class adm_config(pylon.base.base):
         for f in portage_controlled:
             (n_passed, n_checked, errs) = cruft.contents_checker._run_checks(cruft.vardb._dblink(pkg_map[f]).getcontents())
             if not [e for e in errs if re.search(f + '.*MD5', e)]:
-                self.ui.warning('=MD5 %s (%s)' % (f, pkg_map[f]))
+                self.ui.warning('=MD5 {0} ({1})'.format(f, pkg_map[f]))
             else:
-                self.ui.debug('!MD5 %s (%s)' % (f, pkg_map[f]))
+                self.ui.debug('!MD5 {0} ({1})'.format(f, pkg_map[f]))
         
 if __name__ == '__main__':
     app = adm_config(job_class=gentoo.job.job,
