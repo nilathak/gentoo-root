@@ -11,42 +11,43 @@
 #
 # inspired by ecatmur's cruft script:
 # http://forums.gentoo.org/viewtopic-t-152618-postdays-0-postorder-asc-start-0.html
-# ====================================================================
-# FIXME
-# - add monthly cron script on diablo (localhost + belial) and baal
-# - check-in on github, write ebuild, write gentoo forum post
-# - quarantaine feature -> move files to temporary but persistent
-#   folder (var perhaps), to check system
-# - run pylint over completed python modules -> see if coding
-#   standards are met
-# - describe how ignore patterns can exclude non-portage files AND
-#   portage files (for sanity checks)
-# - Auto update cache based on parent dir md5
-# - implement a switch to check for all non-matching patterns inside a
-#   package-specific ignore pattern file (in the cruft.d subtree).
-# - find a neat way to exclude host-specific patterns (eg, belial stuff,...)
-# - .keep files are cruft if .keep_xyz files are provided by package (ie. cron.daily)
-# - implement reverse search: determine file in cruft.d, which contains/generates exclusion pattern for specific path
-# - add __pycache__ pattern to ignore python3 bytecode dirs
+#
 # - ignore syntax
 #   ^/path/single_file$
 #   ^/path/single_dir/$
 #   ^/path/subtree$
 # ====================================================================
+# TODO
+# - check-in on github, write ebuild, write gentoo forum post
+# - run pylint over completed python modules -> see if coding
+#   standards are met
+# - document how ignore patterns can exclude non-portage files AND
+#   portage files (for sanity checks)
+# - Auto update cache based on parent dir md5
+# - implement a switch to check for all non-matching patterns inside a
+#   package-specific ignore pattern file (in the cruft.d subtree).
+# - .keep files are cruft if .keep_xyz files are provided by package (ie. cron.daily)
+# - implement reverse search: determine file in cruft.d, which contains/generates exclusion pattern for specific path. (this will also report redundant exclusions, meaning multiple reverse matching files in cruft.d)
+#   maybe just list all ignored cruft files and the corresponding rule/file in parenthesis
+# - add switch to exclude symlinks to non-cruft files (until perfect eselect handling is available...)
+# - WTF? devise a >= version usecase
+#   /etc/portage/cruft.d/sys-boot/grub[-multislot], Sat Jan  4 03:37:33 2014
+#   /etc/portage/cruft.d/sys-boot/grub[multislot], Sat Jan  4 03:37:54 2014
+# ====================================================================
 
+import gentoo.job
+import gentoo.ui
 import gentoolkit.equery.check
 import os
 import portage
+import pylon.base
 import re
 import time
-import gentoo.job
-import gentoo.ui
-import pylon.base
 
 cache_base_path = '/tmp'
 cache_base_name = 'cruft_cache'
 comment_char = '#'
-default_ignore_root = '/mnt/work/projects/workspace/gentoo/usr/bin/gentoo/cruft.d'
+default_ignore_root = '/etc/portage/cruft.d'
 contents_checker = gentoolkit.equery.check.VerifyContents()
 
 # assume standard portage tree locatation at /
@@ -85,7 +86,14 @@ class ui(gentoo.ui.ui):
                                         //date// report cruft objects sorted by modification date,\
                                         //path// report cruft objects sorted by object path (default),\
                                         //rm_chain// report cruft objects as chained rm commands')
+        self.parser_report.add_argument('--exclude_valid_softlinks', action='store_true',
+                                        help='exclude softlinks which link to non-cruft files')
 
+    def setup(self):
+        super().setup()
+        if not self.args.op:
+            raise self.owner.exc_class('Specify at least one subcommand operation')
+        
 class cruft(pylon.base.base):
     'search filesystem cruft on a gentoo system, dedicated to all those control freaks out there...'
 
@@ -94,14 +102,19 @@ class cruft(pylon.base.base):
         t1 = datetime.datetime.now()
         self.data = {}
         getattr(self, self.__class__.__name__ + '_' + self.ui.args.op)()
-        self.ui.debug(self.ui.args.op + ' took ' + str(datetime.datetime.now() - t1) + ' to complete...')
+        self.ui.ext_info(self.ui.args.op + ' took ' + str(datetime.datetime.now() - t1) + ' to complete...')
 
+    def relevant_system_path(self, path):
+        # exclude paths which
+        # - are masked by ignore patterns
+        # - are not even included in the path we'd like to check for cruft
+        return not self.data['patterns'].match(path) and path.startswith(self.ui.args.path)
+        
     def collect_ignore_patterns(self):
         self.ui.info('Collecting ignore patterns...')
 
         pattern_files = []
         for root, dirs, files in os.walk(self.ui.args.ignore_root):
-
             for f in files:
                 # assume leaf dirs contain package-specific patterns
                 if not dirs:
@@ -115,6 +128,8 @@ class cruft(pylon.base.base):
         re_list = []
 
         for pattern_file in pattern_files:
+            self.ui.ext_info('Extracting patterns from: ' + pattern_file)
+            
             # either we generate regexes from executable scripts, ...
             re_list_raw = []
             if os.access(pattern_file, os.X_OK):
@@ -126,7 +141,6 @@ class cruft(pylon.base.base):
 
             # ... or we simply read in lines from a text file
             else:
-                self.ui.debug(pattern_file)
                 for line in open(pattern_file, 'r'):
 
                     # ignore comment lines
@@ -141,53 +155,25 @@ class cruft(pylon.base.base):
             # - interpret spaces as delimiter for multiple patterns
             #   on one line. needed for automatic bash expansion by
             #   {}. however this breaks ignore patterns with spaces!
-            re_list_expanded = [x.rstrip(os.linesep).strip().split() for x in re_list_raw]
+            re_list_of_file = self.flatten([x.rstrip(os.linesep).strip().split() for x in re_list_raw])
 
-            # FIXME regex strings can't be that fucked up, this actually never triggered
-            # try to compile patterns of each pattern file to facilitate regex debugging
-            # for regex in pylon.base.flatten(re_list_expanded):
-            #    try:
-            #        re.compile(regex)
-            #    except:
-            #        self.ui.error('Ignoring invalid regex string: %s' % regex)
-            #    else:
-            #        re_list.append(regex)
-            re_list.extend(pylon.base.flatten(re_list_expanded))
+            # pattern sanity checks, to facilitate pattern file debugging
+            for regex in re_list_of_file:
+                try:
+                    re.compile(regex)
+                except Exception:
+                    self.ui.error('Skipped invalid expression in {1} ({0})'.format(regex,pattern_file))
+                else:
+                    re_list.append(regex)
 
-        self.ui.debug('Ignoring parent directories of ignore objects...')
-        parents = set()
-        for regex in re_list:
-            # strip trailing slash to avoid doubled up ignore root dir
-            parent = os.path.dirname(regex.rstrip('/'))
-            while (parent != ''):
-                # speed optimization
-                if parent + '/$' in parents:
-                    break
-                parents.add(parent + '/$')
-                parent = os.path.dirname(parent)
+        self.ui.debug('Removing dupes & empty strings...')
+        re_set = set(re_list) - set([''])
 
-        self.ui.debug('Removing dupes and concating all expressions into one long regex...')
-        re_str = ''
-        for regex in set(re_list) | parents:
-            # skip empty expression
-            if regex == '':
-                continue
-
-            # scan for potentially unescaped regex control characters
-            regex_wo_valid_delimiters = regex.lstrip('^').rstrip('$')
-            regex_metachars = re.compile('[^\\\\]\.')
-            if regex_metachars.search(regex_wo_valid_delimiters):
-                self.ui.warning('Regex containing non-escaped characters: %s' % regex)
-
-            re_str += regex + '|'
-
-        return re.compile(re_str.rstrip('|'))
-
+        self.ui.debug('Compiling all expressions into one long regex...')
+        return re.compile('|'.join(re_set))
+        
     def collect_portage_objects(self):
-        if 'patterns' not in self.data:
-            self.data['patterns'] = self.collect_ignore_patterns()
-        if 'system' not in self.data:
-            self.data['system'] = self.collect_system_objects()
+        if 'patterns' not in self.data: self.data['patterns'] = self.collect_ignore_patterns()
 
         self.ui.info('Collecting objects managed by portage...')
         objects = {}
@@ -197,18 +183,12 @@ class cruft(pylon.base.base):
             contents = vardb._dblink(pkg).getcontents()
             if self.ui.args.check:
 
-                # iterate one contents item at a time to allow easy
-                # mapping of error <-> object path
+                # iterate one contents item at a time to allow easy mapping of error <-> object path
                 for k, v in contents.items():
-
-                    # exclude portage objects which are masked by ignore patterns
-                    if self.data['patterns'].match(k):
-                        self.ui.debug('Excluding from sanity check: ' + k)
-                        continue
-
-                    (n_passed, n_checked, errs) = contents_checker._run_checks({k:v})
-                    for e in errs:
-                        self.ui.error(pkg + ': ' + e)
+                    if self.relevant_system_path(k):
+                        (n_passed, n_checked, errs) = contents_checker._run_checks({k:v})
+                        for e in errs:
+                            self.ui.error(pkg + ': ' + e)
 
             objects.update(contents)
 
@@ -222,8 +202,7 @@ class cruft(pylon.base.base):
         objects = objects_slashes
 
         self.ui.debug('Flattening out portage paths containing symlinks...')
-        # just flatten out the dirname part to avoid tinkering with
-        # symlinks introduced by portage itself
+        # just flatten out the dirname part to avoid tinkering with symlinks introduced by portage itself
         objects_symlinks = {}
         for k, v in objects.items():
             objects_symlinks[os.path.join(os.path.realpath(os.path.dirname(k)),
@@ -233,67 +212,74 @@ class cruft(pylon.base.base):
         return objects
 
     def collect_system_objects(self):
-        if 'patterns' not in self.data:
-            self.data['patterns'] = self.collect_ignore_patterns()
+        if 'patterns' not in self.data: self.data['patterns'] = self.collect_ignore_patterns()
 
         self.ui.info('Collecting objects in system tree...')
-        objects = []
         import copy
+        objects = []
         for root, dirs, files in os.walk(self.ui.args.path, onerror=lambda x: self.ui.error(str(x))):
 
-            # remove excluded subtrees early to speed up walk.
             for d in copy.copy(dirs):
                 path = os.path.join(root, d)
 
-                # symlinks to dirs are regarded as dir for os.walk.
-                # since it's difficult to determine the target of a
-                # 'sym' portage kind -> fix this here...
-                sym_to_dir = os.path.islink(path)
-
-                if self.data['patterns'].match(path) or sym_to_dir:
+                # symlinks to dirs are regarded as dir for os.walk. since it's difficult to determine the
+                # target of a 'sym' portage kind -> fix this here...
+                if os.path.islink(path):
                     dirs.remove(d)
-                    if sym_to_dir:
-                        files.append(d)
-                    else:
-                        self.ui.debug('Ignoring subtree: ' + path)
+                    files.append(d)
+                    continue
 
-            # store valid objects
-            # add a trailing slash to allow easy distinction between
-            # subtree and single dir exclusion
-            objects.extend([os.path.join(root, d) + '/' for d in dirs])
+                # remove excluded subtrees early to speed up walk (eg, user data)
+                # leave dir without slash in objects => filtered by this regex anyway
+                if self.data['patterns'].match(path):
+                    dirs.remove(d)
+                    objects.append(path)
+                    continue
+
+                # add a trailing slash to allow easy distinction between subtree and single dir exclusion
+                objects.append(path + '/')
+            
             for f in files:
                 path = os.path.join(root, f)
-                # exclude broken symlinks
+                objects.append(path)
+                
+                # report broken symlinks but keep them in list (needed for portage - system report)
                 if not os.path.exists(path):
                     self.ui.error('Broken symlink detected: ' + path)
-                else:
-                    objects.append(path)
 
         return objects
 
     def collect_cruft_objects(self):
-        if 'patterns' not in self.data:
-            self.data['patterns'] = self.collect_ignore_patterns()
-        if 'system' not in self.data:
-            self.data['system'] = self.collect_system_objects()
-        if 'portage' not in self.data:
-            self.data['portage'] = self.collect_portage_objects()
+        if 'patterns' not in self.data: self.data['patterns'] = self.collect_ignore_patterns()
+        if 'portage' not in self.data: self.data['portage'] = self.collect_portage_objects()
+        if 'system' not in self.data: self.data['system'] = self.collect_system_objects()
+
+        self.ui.info('Identifying system/portage mismatch...')
+        self.ui.debug('Generating difference set (portage - system)...')
+        objects = list(set(self.data['portage'].keys()) - set(self.data['system']))
+        for path in sorted(objects):
+            if self.relevant_system_path(path) and not os.path.exists(path):
+                self.ui.error('Portage object missing on system: ' + path)
 
         self.ui.info('Identifying cruft...')
         self.ui.debug('Generating difference set (system - portage)...')
         objects = list(set(self.data['system']) - set(self.data['portage'].keys()))
 
-        self.ui.debug('Apply ignore patterns...')
+        self.ui.debug('Applying ignore patterns...')
         remaining = [path for path in objects if not self.data['patterns'].match(path)]
         self.n_ignored = len(objects) - len(remaining)
 
         # add a date info to the remaining objects
         cruft = {}
-        for path in remaining:
-            try:
-                cruft[path] = [time.localtime(os.path.getmtime(path))]
-            except OSError:
-                self.ui.error('File disappeared: ' + path)
+        for path in sorted(remaining):
+            # remove cruft -> non-cruft symlinks
+            if (not os.path.islink(path) or
+                os.path.realpath(path) in remaining or
+                not self.ui.args.exclude_valid_softlinks):
+                try:
+                    cruft[path] = [time.localtime(os.lstat(path).st_mtime)]
+                except OSError:
+                    self.ui.error('Path disappeared: ' + path)
 
         return cruft
 
@@ -346,24 +332,24 @@ class cruft(pylon.base.base):
             date_str = lambda x: time.asctime(date(x))
 
             # sort & format according to option
-            fmt = '%(path_str)s, %(date_str)s'
+            fmt = '{path_str}, {date_str}'
             reverse = False
             sort_key = path
             if self.ui.args.format == 'date':
                 reverse = True
                 sort_key = date
             if self.ui.args.format == 'rm_chain':
-                fmt = 'rm -rf "%(path_str)s" && \\'
+                fmt = 'rm -rf "{path_str}" && \\'
             cruft_keys.sort(key=sort_key, reverse=reverse)
 
-            self.ui.warning('Cruft objects:' + os.linesep +
-                            os.linesep.join([fmt % {
-                                'path_str': path_str(co),
-                                'date_str': date_str(co),
-                                } for co in cruft_keys]))
-            self.ui.warning('Cruft objects identified: %i' % len(cruft_keys))
+            self.ui.info('Cruft objects:' + os.linesep +
+                         os.linesep.join(
+                             [fmt.format(path_str=path_str(co),
+                                         date_str=date_str(co))
+                              for co in cruft_keys]))
+            self.ui.warning('Cruft objects identified: {0}'.format(len(cruft_keys)))
 
-        self.ui.info('Cruft files ignored: %i' % self.n_ignored)
+        self.ui.info('Cruft files ignored: {0}'.format(self.n_ignored))
 
     def cruft_list_patterns(self):
         'list collected ignore patterns'
@@ -384,6 +370,359 @@ if __name__ == '__main__':
     # p.sort_stats('cumulative').print_stats(30)
     # p.sort_stats('time').print_stats(30)
 
+
+
+
+#    # helpers
+#    # =================================================
+#    def users():
+#        return self.dispatch('awk -F: \'{ printf $1 "," }\' /etc/passwd',
+#                             output=None).stdout[0].rstrip(',').split(',')
+#    def interfaces():
+#        return self.dispatch('for service in /etc/init.d/net.*; do echo -n ${service##*.},; done',
+#                             output=None).stdout[0].rstrip(',').split(',')
+#    def grab_setting(v):
+#        return self.dispatch('[[ -r /etc/make.globals ]] && source /etc/make.globals; \
+#        [[ -r ${PORTDIR-/usr/portage}/profiles/base/make.defaults ]] && source ${PORTDIR-/usr/portage}/profiles/base/make.defaults; \
+#        [[ -r /etc/make.profile/make.defaults ]] && source /etc/make.profile/make.defaults; \
+#        [[ -r /etc/make.conf ]] && source /etc/make.conf; \
+#        echo ${%s}' % v, output=None).stdout
+# 
+#    # conditions
+#    # =================================================
+#    def installed(v, slot=None, use=None):
+#        import portage
+#        return len(portage.db['/']['vartree'].dbapi.match(v)) > 0
+# 
+#    # Things belonging to users
+#    ignore(''.join(['^/var/spool/cron/crontabs/' + u for u in users()]))
+#    ignore(''.join(['^/var/spool/mail/' + u for u in users()]))
+# 
+#    # Local files
+#    ignore('''
+#    ^/etc/init\.d/local
+#    ^/usr/local
+#    ^/usr/share/applications/local
+#    ^/usr/share/control-center-2\.0/capplets/local
+#    ^/usr/share/faces
+#    ^/usr/share/fonts/local
+#    ^/usr/share/pixmaps/local
+#    ^/usr/share/sounds/local
+#    ''')
+# 
+#    # Admin-managed data and resources (files needed to regenerate a system)
+#    ignore('''
+#        ^/etc/cron\.(hourly|daily|weekly|monthly|allow|deny)
+#        ^/etc/dnsdomainname
+#        ^/etc/fstab
+#        ^/etc/group
+#        ^/etc/group-
+#        ^/etc/gshadow
+#        ^/etc/gshadow-
+#        ^/etc/hostname
+#        ^/etc/hosts(\.(allow|deny|equiv))*
+#        ^/etc/issue(\.net)*
+#        ^/etc/make\.(conf|profile)
+#        ^/etc/localtime
+#        ^/etc/motd
+#        ^/etc/passwd
+#        ^/etc/passwd-
+#        ^/etc/portage
+#        ^/etc/runlevels
+#        ^/etc/shadow
+#        ^/etc/shadow-
+#        ^/etc/skel
+#        ^/etc/xprofile
+#        ^/var/lib/portage
+#    ''')
+# 
+#    # Kernel and console
+#    ignore('''
+#    ^/etc/mtab
+#    ^/var/log/dmesg
+#    ^/var/run/console/console\.lock
+#    ''')
+#    ignore(''.join(['^/var/run/console/' + u for u in users()]))
+# 
+# 
+#    # java dependant ignores
+#    if java_installed():
+#        ignore('^/etc/\.java')
+#    if (java_installed('sun') or
+#        java_installed('ibm-jdk')):
+#        ignore(''.join(nsplugin('libjavaplugin_oji.so')))
+# 
+#    # ignores depending on certain files
+#    if exists('/var/lib/init.d/started/clock'):
+#        ignore('^/etc/adjtime')
+#    if exists('/var/lib/init.d/started/hostname'):
+#        ignore('^/etc/env\.d/01hostname')
+#    if (exists('/var/lib/init.d/started/bootmisc') or
+#        exists('/var/lib/init.d/started/domainname')):
+#        ignore('^/etc/resolv\.conf')
+#    if exists('/var/lib/init.d/started/urandom'):
+#        ignore('^/var/run/random-seed')
+# 
+#    # ignores depending on eclasses
+#    if eclass('games'):
+#        ignore('^/etc/env\.d/90games')
+#    if eclass('linux-mod'):
+#        ignore('^/usr/share/module-rebuild')
+# 
+#    # Package dependant ignores
+#    if installed('x11-base/xorg-x11'):
+#        ignore('/\.fonts\.cache-1')
+#    if installed('sys-apps/hal'):
+#        ignore('^/etc/\.fstab\.hal\.(1|i)')
+#    if installed('sys-apps/shadow'):
+#        ignore('^/etc/\.pwd\.lock')
+#    if installed('media-libs/alsa-lib'):
+#        ignore('^/etc/asound\.state')
+#    if installed('app-shells/bash'):
+#        ignore('^/etc/bash/bash_logout')
+#    if installed('sys-fs/e2fsprogs'):
+#        ignore('^/etc/blkid\.tab(\.old)*')
+#    if installed('net-mail/courier-imap'):
+#        ignore('^/etc/courier-imap/(authdaemond\.conf|imapd\.pem)')
+#    if installed('net-dns/ddclient'):
+#        ignore('^/etc/ddclient/ddclient\.(cache|conf)')
+#    if installed('app-misc/fdutils'):
+#        ignore('^/etc/driveprm')
+#    if installed('dev-java/java-config'):
+#        ignore('^/etc/env\.d/20java')
+#    if installed('net-fs/nfs-utils'):
+#        ignore('^/etc/exports')
+#    if installed('net-print/foomatic'):
+#        ignore('^/etc/foomatic\.cups')
+#    if installed('app-portage/gentoolkit-dev'):
+#        ignore('^/etc/gensync/.*\.syncsource')
+#    if installed('x11-libs/gtk+'):
+#        ignore('''
+#        ^/etc/gtk-2\.0/gtk\.immodules
+#        ^/etc/gtk-2\.0/gdk-pixbuf\.loaders
+#        ''')
+#    if installed('media-libs/libgphoto2'):
+#        ignore('^/etc/hotplug/usb/usbcam-gphoto2\.usermap')
+#    if installed('sys-apps/sysvinit'):
+#        ignore('^/etc/ioctl\.save')
+#    if installed('net-nds/openldap'):
+#        ignore('^/etc/openldap/ssl/ldap\.pem')
+#    if installed('dev-util/pretrace'):
+#        ignore('^/etc/pretrace\.conf')
+#    if installed('net-ftp/proftpd'):
+#        ignore('^/etc/proftpd/proftpd\.conf')
+#    if installed('x11-libs/pango'):
+#        ignore('^/etc/pango/pango\.modules')
+#    if installed('net-misc/rsync'):
+#        ignore('^/etc/rsync/rsyncd\.conf')
+#    if installed('app-text/docbook-dsssl-stylesheets'):
+#        ignore('^/etc/sgml/dsssl-docbook-stylesheets\.cat')
+#    if installed('app-text/docbook-xml-dtd'):
+#        ignore('^/etc/xml/docbook')
+#    if installed('sys-devel/gcc-config'):
+#        ignore('^/(usr/bin/(gcc-config|(${CHOST}-)*(gcc|cpp|cc|c\+\+|g\+\+|f77|g77|gcj)(32|64)*)|lib/(cpp|libgcc_s\.so(\.1)*))')
+#    if installed('media-gfx/gimp'):
+#        ignore('^/usr/bin/gimp')
+#    if installed('dev-lang/python'):
+#        ignore('''
+#        ^/usr/bin/python(2)*
+#        ^/var/log/python-updater\.log
+#        ''')
+#    if installed('net-www/netscape-flash'):
+#        ignore(''.join(nsplugin('libflashplayer.so')))
+#        ignore(''.join(nsplugin('flashplayer.xpt')))
+#    if installed('media-video/vlc'):
+#        ignore(''.join(nsplugin('libvlcplugin.so')))
+#    if installed('=dev-lang/python-2.3*'): VERSIONS !!!!!!!!!!!!!
+#        ignore('^/usr/lib/python2\.3/lib-dynload/bz2\.so')
+#    if installed('dev-python/pygtk'):
+#        ignore('^/usr/lib/python${PYVER}/site-packages/pygtk\.(py|pyc|pyo|pth)')
+#    if installed('media-libs/fontconfig'):
+#        ignore('^/usr/share/fonts/afms')
+#    if installed('media-fonts/urw-fonts'):
+#        ignore(''.join(fontdir('urw-fonts')))
+#    if installed('sys-apps/man'):
+#        ignore('^/usr/share/man/whatis')
+#    if installed('media-gfx/gimp'):
+#        ignore('^/usr/share/pixmaps/wilber-icon\.png')
+#    if installed('app-admin/gnome-system-tools'):
+#        ignore('^/var/cache/setup-tool-backends')
+#    if installed('net-firewall/iptables'):
+#        ignore('^/var/lib/iptables/rules-save')
+#    if installed('net-fs/nfs-utils'):
+#        ignore('^/var/lib/nfs/(e|rm|x)tab')
+#    if installed('sys-apps/dbus'):
+#        ignore('^/var/lib/dbus/(pid|system_bus_socket)')
+#    if installed('sys-apps/slocate'):
+#        ignore('^/var/lib/slocate/slocate\.db')
+#    if installed('sys-apps/pam-login'):
+#        ignore('^/var/log/lastlog')
+#    if installed('app-admin/sudo'):
+#        ignore('^/var/run/sudo')
+#    if installed('sys-process/cronbase'):
+#        ignore('^/var/spool/cron/lastrun/(cron\.(hourly|daily|weekly|monthly)|lock)')
+#    if (installed('net-misc/ssh') or
+#        installed('net-misc/openssh')):
+#        ignore('^/etc/ssh/ssh_host_(dsa_|rsa_)*key(\.pub)*')
+#    if installed('app-emulation/vmware-workstation'):
+#        ignore('''
+#        ^/etc/vmware
+#        ^/var/lock/subsys/vmware
+#        ^/var/run/vmware
+#        ''')
+#    if installed('app-text/docbook-sgml-dtd'):
+#        ignore('''
+#        ^/etc/sgml/sgml\.cenv
+#        ^/etc/sgml/sgml\.env
+#        ''')
+#        # cat /var/db/pkg/app-text/docbook-sgml-dtd-*/SLOT | sed 's:^:/etc/sgml/sgml-docbook-:; s:$:.cat:'
+#    if installed('app-text/sgml-common'):
+#        ignore('''
+#        ^/etc/sgml/sgml-ent\.cat
+#        ^/etc/sgml/sgml-docbook\.cat
+#        ^/etc/sgml/catalog
+#        ''')
+#    if installed('app-text/sgmltools-lite'):
+#        ignore('''
+#        ^/etc/env\.d/93sgmltools-lite
+#        ^/etc/sgml/sgml-lite\.cat
+#        ''')
+#    if installed('dev-db/mysql'):
+#        ignore('''
+#        ^/var/lib/mysql
+#        ^/var/log/mysql
+#        ^/var/run/mysqld
+#        ''')
+#    if installed('dev-lang/perl'):
+#        ignore('''
+#        ^/usr/lib/libperl\.so
+#        ''')
+#        # perl -e 'use Config; print $Config{installsitearch};'
+#        # perl -e 'use Config; print $Config{privlib}."/CPAN/Config.pm";'
+#        # perl -e 'use Config; print $Config{installarchlib}."/perllocal.pod";'
+#    if installed('dev-ruby/ruby-config'):
+#        ignore('''
+#        ^/usr/lib/libruby\.so
+#        ^/usr/share/man/man1/ruby\.1\.gz
+#        ^/usr/bin/(ruby|irb|erb|testrb|rdoc)
+#        ''')
+#    if installed('dev-util/ccache'):
+#        ignore('''
+#        ^/usr/lib/ccache/bin/(c\+\+|cc|g\+\+|gcc|${CHOST}-(c\+\+|g\+\+|gcc))
+#        ^${CCACHE_DIR}
+#        ''')
+#    if installed('kde-base/kdebase'):
+#        ignore('''
+#        ^/usr/kde/3\.2/share/templates/\.source/emptydir
+#        ^/var/log/kdm\.log
+#        ^/var/run/kdm\.pid
+#        ''')
+#        ignore(''.join(['^/var/tmp/kdecache-' + u for u in users()]))
+#    if installed('mail-mta/postfix'):
+#        ignore('''
+#        ^/etc/mail/aliases\.db
+#        ^/var/spool/postfix
+#        ''')
+#    if installed('media-gfx/xloadimage'):
+#        ignore('''
+#        ^/usr/bin/xview
+#        ^/usr/bin/xsetbg
+#        ^/usr/share/man/man1/xview\.1\.gz
+#        ^/usr/share/man/man1/xsetbg\.1\.gz
+#        ''')
+#    if installed('net-fs/nfs-utils'):
+#        ignore('''
+#        ^/var/run/rpc\.statd\.pid
+#        ^/var/lib/nfs/(sm|sm\.bak|state)
+#        ''')
+#    if installed('net-fs/samba'):
+#        ignore('''
+#        ^/etc/samba/smb\.conf
+#        ^/etc/samba/private
+#        ^/var/spool/samba
+#        ^/var/log/samba
+#        ^/var/log/samba3
+#        ^/var/run/samba
+#        ^/var/cache/samba
+#        ^/var/lib/samba
+#        ''')
+#    if installed('net-misc/dhcpcd'):
+#        ignore('''
+#        ^/etc/ntp\.conf
+#        ^/etc/ntp\.conf.sv
+#        ^/etc/resolv\.conf
+#        ^/etc/resolv\.conf\.sv
+#        ^/etc/yp\.conf
+#        ^/etc/yp\.conf\.sv
+#        ''')
+#        ignore(''.join(['^/var/cache/dhcpcd-%s\.cache' % i for i in interfaces()]))
+#        ignore(''.join(['^/var/lib/dhcpc(/dhcpcd(\.exe|-%s\.info(\.old)*))*' % i for i in interfaces()]))
+#        ignore(''.join(['^/var/run/dhcpcd-%s\.pid' % i for i in interfaces()]))
+#    if installed('net-misc/ntp'):
+#        ignore('''
+#        ^/etc/ntp\.conf
+#        ^/var/log/ntp\.log
+#        ''')
+#    if installed('net-misc/nxserver-freenx'):
+#        ignore('''
+#        ^/etc/env\.d/50nxserver
+#        ^/usr/NX/home/nx/\.ssh/known_hosts
+#        ^/usr/NX/var/db/closed
+#        ^/usr/NX/var/db/failed
+#        ^/usr/NX/var/db/running
+#        ''')
+#    if installed('net-misc/openssh'):
+#        ignore('^/etc/ssh/(moduli|ssh_config|sshd_config)')
+#    if installed('net-print/cups'):
+#        ignore('''
+#        ^/etc/cups
+#        ^/etc/printcap
+#        ^/var/log/cups
+#        ^/var/spool/cups
+#        ''')
+#    if installed('=net-www/apache-2*'):
+#        ignore('''
+#        ^/var/lib/dav
+#        ^/var/log/apache2
+#        ^/var/cache/apache2
+#        ^/etc/apache2/(conf/(ssl|vhosts)|(extra)*modules|lib|logs)
+#        ''')
+#    if installed('sys-apps/acpid'):
+#        ignore('''
+#        ^/var/log/acpid
+#        ^/var/run/acpid\.socket
+#        ''')
+#    if installed('sys-apps/baselayout'):
+#        ignore('''
+#        ^/etc/env\.d/02locale
+#        ^/etc/gentoo-release
+#        ^/etc/modprobe\.conf
+#        ^/etc/modprobe\.conf\.old
+#        ^/etc/modprobe\.devfs
+#        ^/etc/modprobe\.devfs\.old
+#        ^/etc/modules\.conf
+#        ^/etc/modules\.conf\.old
+#        ^/etc/ld\.so\.conf
+#        ^/etc/prelink\.conf
+#        ^/etc/profile\.env
+#        ^/etc/csh\.env
+#        ^/usr/share/man/\.keep\.gz
+#        ^/var/lib/init\.d
+#        ''')
+#    if installed('sys-apps/portage'):
+#        ignore('''
+#        ^${PORTDIR}
+#        ^/var/cache/edb
+#        ^/var/db/pkg
+#        ^/var/log/emerge\.log
+#        ^/var/log/emerge_fix-db\.log
+#        ^${PORT_LOGDIR}
+#        ^${PORTAGE_TMPDIR}/portage
+#        ''')
+
+#######################################################################################
+#######################################################################################
+#######################################################################################
 
 # function grab_setting() {
 #    name="$1"; default="$2"
