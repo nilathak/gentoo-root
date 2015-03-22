@@ -36,7 +36,7 @@ diff_date_format   = '%a %b %d %H:%M:%S %Y'
 class backup_rdiff(pylon.base.base):
     'implement backups using rdiff-backup'
 
-    @pylon.base.memoize
+    @functools.lru_cache(typed=True)
     def determine_obsolete_diff_sets(self, dest_path, opts=''):
         'determine if remove_older_limit has been reached'
 
@@ -92,7 +92,7 @@ class backup_rdiff(pylon.base.base):
         if obsolete_diff_key:
             s = []
             for k in ascending_date_keys:
-                norm_str = '%s = %15.2f' % (k.strftime(diff_date_format), diff_sizes[k])
+                norm_str = '{0} = {1:15.2f}'.format(k.strftime(diff_date_format), diff_sizes[k])
                 if k < oldest_retained_key:
                     norm_str += ' <- scheduled for deletion'
                 s.append(norm_str)
@@ -102,7 +102,7 @@ class backup_rdiff(pylon.base.base):
         return None
 
     def verify(self, dest_path, opts=''):
-        self.ui.info('Verifying metadata of %s...' % dest_path)
+        self.ui.info('Verifying metadata of {0}...'.format(dest_path))
         self.dispatch('rdiff-backup ' +
 
                       # check for metadata consistency
@@ -116,7 +116,7 @@ class backup_rdiff(pylon.base.base):
 
     def do(self, src_path, dest_path, opts=''):
 
-        self.ui.info('Saving %s to %s...' % (src_path, dest_path))
+        self.ui.info('Saving {0} to {1}...'.format(src_path, dest_path))
         self.dispatch('rdiff-backup ' +
          
                       # Exclude files on file systems (identified by
@@ -157,21 +157,21 @@ class backup_rdiff(pylon.base.base):
         # determine diff sets to remove
         obsolete_diff_date = self.determine_obsolete_diff_sets(dest_path, opts)
         if obsolete_diff_date:
-            self.ui.warning('Backup of %s has crossed size limit of %.2f! Use modify -o"remove,%s"' % (dest_path,
-                                                                                                       remove_older_limit,
-                                                                                                       obsolete_diff_date))
+            self.ui.warning('Backup of {0} has crossed size limit of {1:.2f}! Use modify -o"remove,{2}"'.format(dest_path,
+                                                                                                                remove_older_limit,
+                                                                                                                obsolete_diff_date))
 
     def info(self, src_path, dest_path, opts=''):
 
         # determine diff sets to remove
         obsolete_diff_date = self.determine_obsolete_diff_sets(dest_path, opts)
         if obsolete_diff_date:
-            self.ui.warning('Backup of %s has crossed size limit of %.2f! Use modify -o"remove,%s"' % (dest_path,
-                                                                                                       remove_older_limit,
-                                                                                                       obsolete_diff_date))
+            self.ui.warning('Backup of {0} has crossed size limit of {1:.2f}! Use modify -o"remove,{2}"'.format(dest_path,
+                                                                                                                remove_older_limit,
+                                                                                                                obsolete_diff_date))
 
         # diff src to dest
-        self.ui.info('Differences %s <-> %s...' % (src_path, dest_path))
+        self.ui.info('Differences {0} <-> {1}...'.format(src_path, dest_path))
         try:
             self.dispatch('rdiff-backup ' +
          
@@ -196,7 +196,7 @@ class backup_rdiff(pylon.base.base):
                           src_path + ' ' + dest_path,
                           output='both')
         except self.exc_class:
-            self.ui.warning('The backup at %s is not up-to-date!' % dest_path)
+            self.ui.warning('The backup at {0} is not up-to-date!'.format(dest_path))
 
     def modify(self, src_path, dest_path, opts=''):
         'modify backup destinations according to -o switch'
@@ -205,7 +205,7 @@ class backup_rdiff(pylon.base.base):
         arg = self.ui.args.options.split(',')[1]
 
         if cmd == 'remove':
-            self.ui.info('Removing obsolete diff sets from %s...' % dest_path)
+            self.ui.info('Removing obsolete diff sets from {0}...'.format(dest_path))
             self.dispatch('rdiff-backup ' +
 
                           # use permanent force

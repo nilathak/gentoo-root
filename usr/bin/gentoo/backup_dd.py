@@ -21,7 +21,7 @@ class backup_dd(pylon.base.base):
     def do(self, src_path, dest_path, opts=''):
         img_path = os.path.join(dest_path, dd_image_name)
 
-        self.ui.info('Saving %s to %s...' % (src_path, dest_path))
+        self.ui.info('Saving {0} to {1}...'.format(src_path, dest_path))
         self.dispatch('dd ' +
 
                       # Above 32k/64k/128k (depending on machine)
@@ -45,7 +45,7 @@ class backup_dd(pylon.base.base):
         img_path = os.path.join(dest_path, dd_image_name)
         img_date = datetime.datetime.fromtimestamp(os.path.getmtime(img_path)).isoformat()
 
-        self.ui.info('Timestamp of last image for %s: %s' % (src_path, img_date))
+        self.ui.info('Timestamp of last image for {0}: {1}'.format(src_path, img_date))
 
     def modify(self, src_path, dest_path, opts=''):
         pass

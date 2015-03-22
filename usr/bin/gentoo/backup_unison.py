@@ -12,7 +12,7 @@ class backup_unison(pylon.base.base):
     'implement semi-automated unison synchronization'
 
     def do(self, src_path, dest_path, opts=''):
-        self.ui.info('Synchronizing %s to %s...' % (src_path, dest_path))
+        self.ui.info('Synchronizing {0} to {1}...'.format(src_path, dest_path))
         try:
             self.dispatch('eselect unison update && unison ' +
 

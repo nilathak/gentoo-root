@@ -12,7 +12,7 @@ class backup_rsync(pylon.base.base):
     'implement simple rsync copy backup module.'
 
     def do(self, src_path, dest_path, opts=''):
-        self.ui.info('Saving %s to %s...' % (src_path, dest_path))
+        self.ui.info('Saving {0} to {1}...'.format(src_path, dest_path))
         self.dispatch('rsync ' +
                       # preserve almost everything
                       '--archive ' +
@@ -44,7 +44,7 @@ class backup_rsync(pylon.base.base):
                       output='both')
 
     def info(self, src_path, dest_path, opts=''):
-        self.ui.info('Differences %s <-> %s...' % (src_path, dest_path))
+        self.ui.info('Differences {0} <-> {1}...'.format(src_path, dest_path))
         self.dispatch('rsync ' +
                       # preserve almost everything
                       '--archive ' +
