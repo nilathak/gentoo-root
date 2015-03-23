@@ -30,9 +30,7 @@
 # - implement reverse search: determine file in cruft.d, which contains/generates exclusion pattern for specific path. (this will also report redundant exclusions, meaning multiple reverse matching files in cruft.d)
 #   maybe just list all ignored cruft files and the corresponding rule/file in parenthesis
 # - add switch to exclude symlinks to non-cruft files (until perfect eselect handling is available...)
-# - WTF? devise a >= version usecase
-#   /etc/portage/cruft.d/sys-boot/grub[-multislot], Sat Jan  4 03:37:33 2014
-#   /etc/portage/cruft.d/sys-boot/grub[multislot], Sat Jan  4 03:37:54 2014
+# - create a usecase for a pattern file with ">=asdf-version" in its name (see multislot useflag with grub)
 # ====================================================================
 
 import gentoo.job
@@ -256,18 +254,24 @@ class cruft(pylon.base.base):
 
         self.ui.info('Identifying system/portage mismatch...')
         self.ui.debug('Generating difference set (portage - system)...')
-        objects = list(set(self.data['portage'].keys()) - set(self.data['system']))
-        for path in sorted(objects):
-            if self.relevant_system_path(path) and not os.path.exists(path):
+        mismatch = list(set(self.data['portage'].keys()) - set(self.data['system']))
+        for path in sorted(mismatch):
+            if not os.path.exists(path) and self.relevant_system_path(path):
                 self.ui.error('Portage object missing on system: ' + path)
 
         self.ui.info('Identifying cruft...')
         self.ui.debug('Generating difference set (system - portage)...')
-        objects = list(set(self.data['system']) - set(self.data['portage'].keys()))
+        cruft = list(set(self.data['system']) - set(self.data['portage'].keys()))
 
         self.ui.debug('Applying ignore patterns...')
-        remaining = [path for path in objects if not self.data['patterns'].match(path)]
-        self.n_ignored = len(objects) - len(remaining)
+        remaining = [path for path in cruft if not self.data['patterns'].match(path)]
+
+        self.ui.debug('Removing parent directories of cruft files...')
+        ignored = list(set(cruft) - set(remaining))
+        for path in ignored:
+            remaining = list(filter(lambda x: not path.startswith(x), remaining))
+        
+        self.n_ignored = len(cruft) - len(remaining)
 
         # add a date info to the remaining objects
         cruft = {}

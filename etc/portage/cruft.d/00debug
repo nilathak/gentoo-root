@@ -23,7 +23,8 @@
 ^/usr/share/config/kdm/kdmrc$
 
 # keep files without owner
-#.*\.keep$
+# remove and delete folder if it appears in cruft list together with .keep file => portage will create directories anyway if needed
+.*/\.keep$
 
 # FIXME search for matching pyc & py in ALL folders, not just PYTHONPATH
 # this also results in huge exclusion list from sanity check -> verify this
