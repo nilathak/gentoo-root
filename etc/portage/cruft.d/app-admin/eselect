@@ -1,0 +1,4 @@
+#!/bin/bash
+echo ^/etc/env\.d/05binutils$
+echo ^/etc/env\.d/binutils/config-`gcc -dumpmachine`$
+echo ^/var/lib/gentoo/news$

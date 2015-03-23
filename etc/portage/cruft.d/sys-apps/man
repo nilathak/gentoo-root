@@ -1,0 +1,32 @@
+#!/usr/bin/env python
+
+# ignore valid man cache objects according to FHS 2.3
+#
+# Certain versions of the FHS recommend putting formatted versions of
+# /usr/.../share/man/[locale/]manx/page.x into
+# /var/cache/man/.../[locale/]catx/page.x.
+import os
+import re
+manpaths = set(os.environ['MANPATH'].split(':'))
+for l in open('/etc/man.conf', 'r'):
+    if l.find('MANPATH ') != -1:
+        if len(l.split()) == 2:
+            manpaths.add(l.split()[1])
+section_dir = re.compile('.*/man[^/]*/')
+for p in manpaths:
+    if os.path.exists(p):
+        for root, dirs, files in os.walk(p):
+            if section_dir.match(root):
+                man_nr = os.path.basename(root)
+                nr = man_nr[3:]
+                locale = os.path.basename(os.path.dirname(root))
+                if locale == 'man':
+                    locale = ''
+                for f in files:
+                    regex = '^' + os.path.join('/var/cache/man',
+                                               os.path.join(locale,
+                                                            os.path.join('cat' + nr,
+                                                                         f))) + '$'
+                    regex = regex.replace('+', '\+')
+                    regex = regex.replace('.', '\.')
+                    print(regex)

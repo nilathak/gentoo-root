@@ -1,0 +1,12 @@
+# eselect opengl creates some symlinks
+^/usr/lib.*/libGL\.so$
+^/usr/lib.*/xorg/modules/extensions/libdri2\.so$
+^/usr/lib.*/xorg/modules/extensions/libdri\.so$
+^/usr/lib.*/xorg/modules/extensions/libglx\.so$
+^/usr/include/GL/gl\.h$
+^/usr/include/GL/glx\.h$
+^/usr/include/GL/glxtokens\.h$
+^/usr/include/GL/glext\.h$
+^/usr/include/GL/glxext\.h$
+^/usr/include/GL/glxmd\.h$
+^/usr/include/GL/glxproto\.h$

@@ -1,0 +1,76 @@
+# FHS 2.3 items to ignore
+ 
+# Essential user command binaries (for use by all users)
+^/bin/$
+ 
+# Static files of the boot loader
+^/boot/$
+ 
+# Device files
+^/dev$
+ 
+# Host-specific system configuration
+^/etc/$
+^/etc/X11/$           # Configuration for the X Window system (optional)
+^/etc/opt/$           # Configuration for /opt
+^/etc/sgml/$          # Configuration for SGML (optional)
+^/etc/xml/$           # Configuration for XML (optional)
+ 
+# User home directories (optional)
+^/home$
+ 
+# Essential shared libraries and kernel modules
+^/lib/$
+^/lib[^/]*/$
+ 
+# Mount point for removeable media
+^/media$
+ 
+# Mount point for a temporarily mounted filesystem
+^/mnt$
+ 
+# Add-on application software packages
+^/opt/$
+ 
+# Home directory for the root user (optional)
+^/root$
+ 
+# System binaries
+^/sbin/$
+ 
+# Data for services provided by this system
+^/srv/$
+ 
+# Temporary files
+^/tmp$
+ 
+# Shareable, read-only data
+^/usr/$
+^/usr/X11R6/$         # XWindow System, version 11 release 6 (optional)
+^/usr/bin/$           # Most user commands
+^/usr/include/$       # Header files included by C programs
+^/usr/lib/$           # Libraries
+^/usr/lib[^/]*/$      # Alternate Format Libraries (optional)
+^/usr/local/$         # Local hierarchy (empty after main installation)
+^/usr/local/bin/$     # Local binaries
+^/usr/local/include/$ # Local C header files
+^/usr/local/lib/$     # Local libraries
+^/usr/local/lib[^/]*/$# Alternate Format Libraries (optional)
+^/usr/local/sbin/$    # Local system binaries
+^/usr/local/share/$   # Local architecture-independent hierarchy
+^/usr/local/src/$     # Local source code
+^/usr/sbin/$          # Non-vital system binaries
+^/usr/share/$         # Architecture-independent data
+^/usr/src/$           # Source code (optional)
+ 
+# Variable data files
+^/var/$
+^/var/cache/$         # Application cache data
+^/var/lib/$           # Variable state information
+^/var/lock/$          # Lock files
+^/var/log/$           # Log files and directories
+^/var/mail/$          # User mailboxes
+^/var/opt/$           # Variable data for /opt
+^/var/run/$           # Data relevant to running processes (http://forums.gentoo.org/viewtopic-t-941536.html)
+^/var/spool/$         # Application spool data
+^/var/tmp/$           # Temporary files preserved between system reboots

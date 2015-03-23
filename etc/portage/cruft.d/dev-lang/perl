@@ -1,0 +1,5 @@
+#!/bin/bash
+
+# ignore generated perl header files
+echo ^`perl -e 'use Config; print $Config{installarchlib};'`/.*\\.ph$
+echo ^`perl -e 'use Config; print $Config{installsitearch};'`/.*\\.ph$
