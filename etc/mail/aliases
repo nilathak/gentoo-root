@@ -14,7 +14,7 @@ nobody:             root
 postfix:            root
 
 # Well-known aliases -- these should be filled in!
-root:               schweizer@localhost
+root:               schweizer@diablo.arreat
 # operator:
 
 # Standard RFC2142 aliases
