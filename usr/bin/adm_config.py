@@ -7,72 +7,44 @@
 # the Free Software Foundation; either version 3, or (at your option)
 # any later version.
 # ====================================================================
-# WORKFLOW
+# HOWTO
 # - start always with checked out host branch
-# - add files via interactive commit dialog (add untracked)
+# - if MD5 sums are equal and file is not needed anymore: checkin any pending changes, git rm in respective working tree,
+# - after deliver_master has been executed on one host, use git pull to see changes on other host
 # - host MUST NEVER be merged onto master; PREFERABLY operate on master directly, or just cherry-pick from host to master:
 #   - commit-based cherry picking from host to master tricky (commits containing host+master files need to be split)
-#   git stash
-#   git checkout master
-#   git --no-pager log <host>
-#   git --no-pager show <commit hashes>
+#   git stash && git checkout master
+#   git log diablo
+#   (git show <commit hashes>)
 #   git cherry-pick <commit hashes>
-#   git checkout <host>
-#   git rebase
-#   git stash pop
+#   git push && git checkout diablo && git rebase && git branch -d master && git stash pop
 # - rebasing host with remote master ensures a minimal diffset ("superimposing" files are auto-removed if no longer needed)
 # - avoid host branches on central bare repo. GUI development mainly on master files, host branches backup done by host backup
-# - determine if remote master can use a fast-forward merge to local master: git remote show origin
-# - if MD5 sums are equal and file is not needed anymore: checkin any pending changes, git rm in respective working tree, 
 #
 # TODO
-# - howto easily move a default file from master to specific host branches?
-# - separate portage.keywords into host and master files
+# - howto easily move a default file from master to specific host branches? authorized_keys?
 # - directly save /usr/src/linux/.config instead of /usr/src/config (wrap has its own kernel now anyway)
 # - MASTER ADD
-#   - ^/etc/portage/cruft\.d$
-#   - /opt/portage
 # - DIABLO ADD
-#   - cruft(2015-03-21 14:27:37,155) ERROR: net-dns/dnsmasq-2.72: /etc/dnsmasq.conf has incorrect MD5sum
 #   - cruft(2015-03-21 14:27:42,048) ERROR: net-misc/dhcpcd-6.6.7: /etc/dhcpcd.conf has incorrect MD5sum
-#   - cruft(2015-03-21 14:27:46,725) ERROR: net-p2p/deluge-1.3.11: /etc/conf.d/deluged has incorrect MD5sum
 #   - cruft(2015-03-21 14:27:49,138) ERROR: net-wireless/hostapd-2.3: /etc/hostapd/hostapd.wpa_psk has incorrect MD5sum
-#   - cruft(2015-03-21 14:27:49,146) ERROR: net-wireless/hostapd-2.3: /etc/hostapd/hostapd.conf has incorrect MD5sum
-#   - cruft(2015-03-21 14:28:09,532) ERROR: sys-apps/baselayout-2.2: /etc/hosts has incorrect MD5sum
 #   - cruft(2015-03-21 14:28:20,970) ERROR: sys-apps/smartmontools-6.3: /etc/smartd.conf has incorrect MD5sum
 #   - cruft(2015-03-21 14:29:46,330) ERROR: www-servers/apache-2.2.29: /etc/conf.d/apache2 has incorrect MD5sum (REALLY NEEDED???????)
-#   - cruft(2015-03-21 14:29:46,784) ERROR: x11-base/xorg-server-1.15.2-r2: /etc/conf.d/xdm has incorrect MD5sum
-#   - /etc/portage/profile/use.mask
-#   - /etc/cron.hourly/spindown
-#   - /etc/cron.monthly/report
 #   - /etc/resolv.conf.head really needed? Feb  2 03:59:00 diablo dnsmasq[2183]: ignoring nameserver 192.168.0.1 - local interface
-#   - /etc/samba/smb.conf
-#   - /etc/samba/smbpasswd
-##############################################
+# - BELIAL ADD
+# - NEEDED anywhere???
+#   - /etc/security/limits.conf
 
-#############FIX
-#/etc/mdadm.conf
-#belial/etc/ddclient/ddclient.conf
-###############REMOVE/REVERT
-#/etc/security/limits.conf
-#/etc/sysctl.conf
 #===================wrap-specific
-#/etc/conf.d/hostname
-#/etc/conf.d/net
-#/etc/default/grub
-#/etc/fstab
 #/etc/inittab
-#/etc/portage/make.conf
 #/etc/portage/package.keywords
 #/etc/portage/package.mask
 #/etc/portage/package.use
-#/usr/src/config
-#/var/lib/portage/world
+#/root/.ssh/authorized_keys
 ###########REMOVE/REVERT
 #belial/etc/portage/profile/package.provided
-#belial/etc/postfix/main.cf
 
-# ====================================================================
+##############################################
 
 repo_path = '/mnt/Dropbox/work/projects/workspace/gentoo-repo'
 hosts = [
@@ -94,8 +66,8 @@ class ui(gentoo.ui.ui):
     def __init__(self, owner):
         super().__init__(owner)
         self.init_op_parser()
-        self.parser_deliver.add_argument('-s', '--skip', action='count', default=0,
-                                         help='resume deliver after manual conflict resolution (s=continue after origin/master pull, ss=continue after host rebase)')
+        self.parser_deliver_master.add_argument('-s', '--skip', action='count', default=0,
+                                                help='resume deliver after manual conflict resolution (s=continue after origin/master pull, ss=continue after host rebase)')
 
     def setup(self):
         super().setup()
@@ -128,48 +100,33 @@ class adm_config(pylon.base.base):
         master_files = set(all_files) - set(self.host_files())
         return sorted(master_files)
 
-    def adm_config_deliver(self):
-        'sequence for delivering master + host'
+    def adm_config_deliver_master(self):
+        'sequence for delivering master & rebasing host branch'
         
         import logging
         verbosity = 'stderr'
         if self.ui.logger.getEffectiveLevel() == logging.DEBUG:
             verbosity = 'both'
 
-        if self.ui.args.skip < 1:
+        if self.dispatch(git_cmd + 'diff ' + self.ui.hostname + ' --name-status -- ' + ' '.join(self.host_files()), output=None).stdout:
+            raise self.exc_class('commit all host changes before delivering master changes!')
 
-            self.ui.debug('Any staged removals?')
-            if self.dispatch(git_cmd + 'diff --cached --name-only --diff-filter=D', output=None).stdout:
-                raise self.exc_class('Checkin staged removals in respective working tree manually before deliver step')
-            
-            self.ui.info('Delivering host-specific changes...')
-            self.ui.debug('Ensure we start with an empty staging area')
-            self.dispatch(git_cmd + 'reset', output=verbosity)
+        # stage additions/removals before calling this function
+        if self.ui.args.skip < 1:
+            self.ui.info('Delivering master-specific changes...')
+            self.dispatch(git_cmd + 'stash save', output=verbosity)
+            self.dispatch(git_cmd + 'stash branch master', output=verbosity)
             self.ui.debug('Looping interactive commit until error code >0 => no more modifications to stage or we intentionally did not select any')
             try:
                 while True:
-                    self.dispatch(git_cmd + 'commit --verbose --interactive -uno ' + ' '.join(self.host_files()), output='nopipes')
-                    if self.ui.args.dry_run:
-                        break
-            except self.exc_class:
-                pass
-
-            self.ui.debug('Creating stash branch for remaining unstaged modifications')
-            self.dispatch(git_cmd + 'stash save', output=verbosity)
-            self.dispatch(git_cmd + 'stash branch master', output=verbosity)
-            self.ui.info('Delivering master-specific changes...')
-            try:
-                while True:
-                    self.dispatch(git_cmd + 'commit --verbose --interactive -uno ' + ' '.join(self.master_files()), output='nopipes')
+                    self.dispatch(git_cmd + 'commit --verbose --interactive -uno', output='nopipes')
                     if self.ui.args.dry_run:
                         break
             # continue to clean up in case KeyboardInterrupt occurs
             except BaseException:
                 pass
 
-            self.ui.debug('Save any unstaged modifications we do not want to commit anywhere yet (host- or master-specific)')
             self.dispatch(git_cmd + 'stash save', output=verbosity)
-
             try:
                 self.ui.debug('Rebasing local master to remote master...')
                 self.dispatch(git_cmd + 'rebase --onto origin/master ' + self.ui.hostname, output=verbosity)
@@ -190,7 +147,12 @@ class adm_config(pylon.base.base):
         self.ui.debug('Cleaning up...')
         self.dispatch(git_cmd + 'branch -d master', output=verbosity)
         self.ui.debug('Restoring any stashed changes...')
-        self.dispatch(git_cmd + 'stash pop', output=verbosity)
+        try:
+            self.dispatch(git_cmd + 'stash show', output=verbosity)
+        except self.exc_class:
+            pass
+        else:
+            self.dispatch(git_cmd + 'stash pop --index', output=verbosity)
 
     def adm_config_report(self):
         'generate report'
