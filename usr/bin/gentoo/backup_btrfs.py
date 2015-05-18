@@ -11,20 +11,22 @@
 # - if  newest timedelta slot contains 0 timestamps => take snapshot
 # - if !oldest timedelta slot contains more than 1 timestamp => keep oldest, delete others
 # - if  oldest timedelta slot contains more than 1 timestamp => keep newest, delete others
-# - if no timedeltas are specified, a snapshot is created every time the script is called, and only the newest is kept
+# - if no timedeltas are specified, all new snapshots from src are cloned to dest, obsolete ones in dest are deleted
 # - deleting snapshot will always happen together with creating snapshots, since older deltas are always >= newer deltas 
 # - the single snapshot after the oldest timedelta is kept for/replaced after oldest-1 timedelta
 # - Taking snapshots of a subvolume is not a recursive process. If a snapshot of a subvolume is created,
 #   every subvolume or snapshot that the subvolume already contains is mapped to an empty directory of the
 #   same name inside the snapshot (https://en.wikipedia.org/wiki/Btrfs#Subvolumes_and_snapshots)
 # - Remote backup with send/receive are faster than simple rsync
-#
-# TODO
-# - BACKUP LUKSHEADERs!!!
-# - when booting from pool to shift root of cache into diablo subvolume, DONT FORGET TO ENABLE SLIM-METADATA feature on cache (enable on pool after switching back to cache)
-# - use btrfs sync after each subvolume snapshot command to ensure the snapshot has been written to disk (especially after removal of snapshots!)
-# - add hashlib.md5('asdf').hexdigest() to snapshot names
-# - determine same_root by trying btrfs sub snap
+# - source snapshot paths must always be specified as absolute paths from root, not path to mount point,
+#   or otherwise the automatic extraction of incremental snapshot directory fails
+# - an empty options string represents a cloning command. if src & dest are on same fs, then it just represents one large timedelta
+# - determining the sizes of specific snapshots (via quota & qgroup) is usually meaningless. deleting snapshots from within the
+#   timedelta grid simply shifts shared data to the neighboring snapshots. reduction in size can only be reached by simply
+#   deleting the oldest snapshots (which can easily done manually without any adm_backup operation).
+#   it would only make sense for snapshots which show a large "exclusive size" (3rd column in qgroup output), which can be elevated
+#   for snapshots containing many large transient files (downloads, caches, ...), but it's generally better to decrease
+#   snapshot retention time in this case
 #
 # POOL -> EXTPOOL
 # =======================
@@ -97,7 +99,7 @@ snapshot_pattern = '%Y-%m-%dT%H-%M-%S'
 snapshot_regex = '[0-9]*-[0-9]*-[0-9]*T[0-9]*-[0-9]*-[0-9]*'
 
 class backup_btrfs(pylon.base.base):
-    'implement btrfs snapshot backups based on interval string'
+    'implement btrfs subvolume snapshot backups based on interval string'
     
     @classmethod
     def unique_logspace(cls, data_points, interval_range):
@@ -116,7 +118,7 @@ class backup_btrfs(pylon.base.base):
                 
     @classmethod
     def get_ts_of_path(cls, path):
-        return datetime.datetime.strptime(re.search(snapshot_regex, path), snapshot_pattern)
+        return datetime.datetime.strptime(re.search(snapshot_regex, path).group(0), snapshot_pattern)
             
     @classmethod
     def get_path_of_ts(cls, path, name, ts):
@@ -155,27 +157,71 @@ class backup_btrfs(pylon.base.base):
         for d in glob.glob(path):
             try:
                 yield self.get_ts_of_path(d)
-            except ValueError:
+            except Exception:
                 self.ui.warning('Failed to extract ts: ' + d)
 
     def do(self, src_path, dest_path, opts=''):
 
-        ts_now = self.get_ts_now()
-        send_dir, name = os.path.split(src_path)
-        recv_dir = dest_path
-        send_path = self.get_path_of_ts(send_dir, name, ts_now)
-        recv_path = self.get_path_of_ts(recv_dir, name, ts_now)
+        # FIXME this still occured !!!!!!
+        # Thread-1: ### adm_backup(2015-04-15 00:56:44,325) ERROR: <class 'pylon.base.script_error'> uuid extraction failed
+        # use random thread startup times for
+        # - avoiding errors during multithreaded "btrfs filesystem show"
+        # - better readability
+        import random
+        import time
+        time.sleep(random.random())
 
-        # check if src is really a btrfs subvolume (preferably a btrfs root)
+        self.ui.info('Saving {0} to {1}...'.format(src_path, dest_path))
+
+        # check if src is really a btrfs subvolume
         try:
             self.dispatch('btrfs subvolume show ' + src_path,
                           passive=True, output=None)
         except self.exc_class:
             raise self.exc_class('source {0} needs to be a valid btrfs subvolume'.format(src_path))
         
-        ## FIXME testcase
+        send_dir, name = os.path.split(src_path)
+        recv_dir = dest_path
+
+        # determine if we're about to send snapshots between two btrfs instances
+        uuid = []
+        for d in (send_dir, recv_dir):
+            output = self.dispatch('btrfs filesystem show {0}'.format(d),
+                                   passive=True,
+                                   output=None).stdout
+            try:
+                uuid.append(re.search('uuid: (.*)', output[0]).group(1))
+            except Exception:
+                raise self.exc_class('uuid extraction failed')
+        same_fs = uuid[0] == uuid[1]
+        
+        ts_now = self.get_ts_now()
+        td_list = list(self.get_td(opts))
+        # assume one large timedelta for same_fs
+        cloning = len(td_list) < 2 and not same_fs
+
+        # distinguish snapshot sets by hash (so timedeltas are not applied to send/receive references of other dests)
+        import hashlib
+        # cloning does not create new hashes, but rather looks at existing ones
+        hash_dir = send_dir if cloning else recv_dir
+        hash = hashlib.md5(hash_dir.encode('utf-8')).hexdigest()
+        hash_glob = '*' + hash + '*'
+        
+        send_path = self.get_path_of_ts(send_dir, name + '.' + hash, ts_now)
+        recv_path = self.get_path_of_ts(recv_dir, name + '.' + hash, ts_now)
+        ts_send_list = sorted(list(self.get_ts(os.path.join(send_dir, name) + hash_glob)))
+        ts_recv_list = sorted(list(self.get_ts(os.path.join(recv_dir, name) + hash_glob)))
+        # cloning does not create new hashes, but rather looks at existing ones
+        ts_list = ts_send_list if cloning else ts_recv_list
+        
+        ## TODO testcase
         ## ==========================
-        #src_test_paths = []
+        #src_test_ts = [
+        #    #ts_now - datetime.timedelta(hours=10),
+        #    #ts_now - datetime.timedelta(hours=15),
+        #    #ts_now - datetime.timedelta(days=302),
+        #]
+        #src_test_paths = list(map(lambda x: self.get_path_of_ts(send_dir, name + '.' + hash, x), src_test_ts))
         #dest_test_ts = [
         #    #ts_now - datetime.timedelta(minutes=30),
         #    #ts_now - datetime.timedelta(hours=5),
@@ -187,151 +233,111 @@ class backup_btrfs(pylon.base.base):
         #    #ts_now - datetime.timedelta(hours=19),
         #    #ts_now - datetime.timedelta(hours=20),
         #    #ts_now - datetime.timedelta(days=20),
-        #    ts_now - datetime.timedelta(days=40),
-        #    ts_now - datetime.timedelta(days=200),
-        #    ts_now - datetime.timedelta(days=300),
-        #    ts_now - datetime.timedelta(days=400),
-        #    ts_now - datetime.timedelta(days=401),
-        #    ]
-        #dest_test_paths = list(map(lambda x: self.get_path_of_ts(recv_dir, name, x), dest_test_ts))
+        #    #ts_now - datetime.timedelta(days=40),
+        #    #ts_now - datetime.timedelta(days=200),
+        #    #ts_now - datetime.timedelta(days=300),
+        #    #ts_now - datetime.timedelta(days=400),
+        #    #ts_now - datetime.timedelta(days=401),
+        #]
+        #dest_test_paths = list(map(lambda x: self.get_path_of_ts(recv_dir, name + '.' + hash, x), dest_test_ts))
         ## add reference snapshots
-        #dest_test_paths.append(dest_test_paths[0] + '.ro') 
-        ##dest_test_paths.append(dest_test_paths[1] + '.ro') 
-        ##src_test_paths.append(dest_test_paths[0].replace(recv_dir, send_dir) + '.ro')
-        ##src_test_paths.append(dest_test_paths[1].replace(recv_dir, send_dir) + '.ro')
+        #if recv_dir != send_dir:
+        #    pass
+        #    #src_test_paths.append(dest_test_paths[0].replace(recv_dir, send_dir))
+        #    #src_test_paths.append(dest_test_paths[1].replace(recv_dir, send_dir))
+        # 
         #try:
         #    [os.mkdir(t) for t in src_test_paths]
         #    [os.mkdir(t) for t in dest_test_paths]
         ## ==========================
         
-        td_list = list(self.get_td(opts))
-        cloning = len(td_list) < 2
-        ts_list = list(self.get_ts(os.path.join(recv_dir, name) + '.*'))
-        #ts_recv_list = list(self.get_ts(os.path.join(recv_dir, name) + '.*.ro'))
-        ts_send_list = list(self.get_ts(os.path.join(send_dir, name) + '.*'))
-         
         for idx,td in enumerate(td_list):
 
-            if cloning:
-                td_list
-                ts_clones = set(ts_list) & set(ts_send_list)
-                ts_to_clone set(ts_send_list) - set(ts_list)
-                ts_to_delete set(ts_list) - set(ts_send_list)
-                
-            
             # how many snapshots are within the current timedelta window?
             ts_within_td = []
-            if not cloning:
 
-                # the newest timedelta window starts at now - 0
-                if idx == 0:
-                    td_prev = datetime.timedelta()
-                
-                self.ui.debug('Checking delta: ' + str(td))
-                for ts in ts_list:
-                    if (ts_now - td < ts) and (ts_now - td_prev > ts):
-                        ts_within_td.append(ts)
-         
-                td_prev = td
+            # the newest timedelta window starts at now - 0
+            if idx == 0:
+                td_prev = datetime.timedelta()
 
-            if idx == 0 and not ts_within_td:
+            self.ui.debug('Checking delta: ' + str(td))
+            for ts in ts_list:
+                if (ts_now - td < ts) and (ts_now - td_prev > ts):
+                    ts_within_td.append(ts)
 
-                if cloning:
-                    # intersection -> 
-                    ts_clones = set(ts_recv_list) & set(ts_send_list)
-                    ts_to_clone set(ts_send_list) - set(ts_recv_list)
-                    ts_to_delete set(ts_recv_list) - set(ts_send_list)
-                    
-                    # FIXME
-                    # - remove to_delete
-                    # - 
-                    
+            td_prev = td
 
+            if idx == 0:
 
-                
-                self.ui.info('Taking snapshot {0}...'.format(recv_path))
-         
-                # are src & dest residing on the same root/subvol?
-                same_root = send_path == recv_path
+                if not ts_within_td:
+                    snap_path = recv_path if same_fs else send_path
+                    self.ui.info('Taking snapshot {0}...'.format(snap_path))
+                    self.dispatch('btrfs subvolume snapshot -r {0} {1}'.format(src_path,
+                                                                               snap_path))
+                    ts_send_list.append(ts_now)
+                    ts_within_td.append(ts_now)
 
-                # check reference snapshot consistency
-                if not same_root:
-                    # any reference snapshots for incremental backup?
-                    for d in (send_dir, recv_dir):
-                        refs_abspath = map(lambda x: os.path.join(d, x), sorted(os.listdir(d)))
-                        refs_ro_suffix = filter(lambda x: re.search(name + '.*\.ro$', x), refs_abspath)
-                        refs = []
-                        for ref in refs_ro_suffix:
-                            try:
-                                ts = self.get_ts_of_path(ref.strip('.ro'))
-                            except ValueError:
-                                pass
-                            else:
-                                refs.append(ref)
-                        if len(refs) > 1:
-                            raise self.exc_class('more than one reference snapshot ({0}*.ro) found in {1}'.format(name, d))
-                            
-                    # check an existing reference snapshot also exists on sending side
-                    parent_str = ''
-                    if refs:
-                        if not os.path.exists(refs[0].replace(recv_dir, send_dir)):
-                            raise self.exc_class('no corresponding reference snapshot of {0} found on sending side'.format(name))
-                        parent_str = '-p ' + refs[0]
-                     
-                # take snapshot of src with current ts
-                self.dispatch('btrfs subvolume snapshot {2} {0} {1}{3}'.format(src_path,
-                                                                               send_path,
-                                                                               '' if same_root else '-r',
-                                                                               '' if same_root else '.ro'))
-                
-                if not same_root:
-                    self.dispatch('btrfs send {0} {1}.ro | btrfs receive {2}'.format(parent_str,
-                                                                                     send_path,
-                                                                                     recv_dir),
-                                  output='stderr')
-                     
-                    # delete now obsolete reference snapshots
-                    if refs:
-                        self.dispatch('btrfs subvolume delete {0} {1}'.format(refs[0],
-                                                                              refs[0].replace(recv_dir, send_dir)))
-                        
-                    # create rw snapshots
-                    self.dispatch('btrfs subvolume snapshot {0}.ro {0}'.format(send_path))
-                    self.dispatch('btrfs subvolume snapshot {0}.ro {0}'.format(recv_path))
+                if cloning or not same_fs:
 
+                    ts_of_clones    = sorted(list(set(ts_send_list) & set(ts_recv_list)))
+                    ts_to_clone     = sorted(list(set(ts_send_list) - set(ts_recv_list)))
+                    ts_to_delete    = sorted(list(set(ts_recv_list) - set(ts_send_list)))
 
-            # FIXME
-            # cloning!!!
-            if len(td_list) == 1:
-                # take all globed source dirs and clone them one by one to dest
-                self.dispatch('btrfs send {0} {1}.ro | btrfs receive {2}'.format('bla',
-                                                                                 send_path,
-                                                                                 recv_dir),
-                              output='stderr')
-                    
+                    # clone all new timestamps
+                    for ts in ts_to_clone:
+
+                        # assemble string of clones timestamp paths
+                        clone_str = ''
+                        for clone in ts_of_clones:
+                            clone_str = clone_str + ' -c ' + self.get_path_of_ts(send_dir, name + '.' + hash, clone)
+
+                        # transfer reference snapshot and any reflink relations
+                        self.ui.info('Cloning to {0}...'.format(recv_path))
+                        self.dispatch('btrfs send {0} {1} | btrfs receive {2}'.format(clone_str,
+                                                                                      self.get_path_of_ts(send_dir, name + '.' + hash, ts),
+                                                                                      recv_dir),
+                                      output='stderr')
+
+                        # add freshly cloned snapshot as new clone
+                        ts_of_clones.append(ts)
+
+                    # cleanup obsolete timestamps
+                    if cloning:
+                        # use deletion code at end of td loop
+                        ts_within_td = ts_to_delete
+                        ts_within_td.append(ts_of_clones[0])
+                    else:
+                        # deleting obsolete reference snapshots on src
+                        for ts in ts_of_clones[:-1]:
+                            path = self.get_path_of_ts(send_dir, name + '.' + hash, ts)
+                            self.ui.info('Deleting obsolete reference: ' + path)
+                            self.dispatch('btrfs subvolume delete -c ' + path)
+
             # keep only the newest snapshot in the oldest timedelta window
-            if idx == len(td_list) - 1:
+            if (idx == len(td_list) - 1 or
+                
+                # - we need to keep newest snapshot in newest timedelta for
+                #   incremental send/receive case
+                # - a reference snapshot on src is only available for the newest timedelta
+                # - this condition surfaces when going from small to large timedelta resolution
+                idx == 0 and not same_fs):
                 ts_within_td = reversed(ts_within_td)
-         
+
             for idx,ts in enumerate(ts_within_td):
-                path = self.get_path_of_ts(recv_dir, name, ts)
+                path = self.get_path_of_ts(recv_dir, name + '.' + hash, ts)
                 if idx > 0:
                     self.ui.info('Deleting snapshot: ' + path)
-                    self.dispatch('btrfs subvolume delete ' + path)
+                    self.dispatch('btrfs subvolume delete -c ' + path)
                 else:
                     self.ui.debug('Keeping snapshot: ' + path)
 
+        self.ui.info('Saved {0} to {1}'.format(src_path, dest_path))
         #finally:
         #    [os.rmdir(t) for t in src_test_paths]
         #    [os.rmdir(t) for t in dest_test_paths]
             
     def info(self, src_path, dest_path, opts=''):
-        # FIXME
-        # display the snapshot sizes (wait on stable implementation of quota feature)
         pass
 
     def modify(self, src_path, dest_path, opts=''):
-        # FIXME
-        # check if it's possible to simply delete large snapshots (eg, created prior to
-        # deleting some files) => is the timestamp structure recovering automatically?
         pass
