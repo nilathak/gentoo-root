@@ -10,8 +10,8 @@
 
 transfer_engines = (
     'btrfs',
-    #'dd',        # deprecated, FIXME replac by ntfsclone
     #'rdiff',     # deprecated, replaced by btrfs
+    'partclone',
     'rsync',
     'unison',
     )
@@ -21,36 +21,42 @@ auto_tasks = {
         ('/mnt/work/projects/backup/cache/diablo',
          '/mnt/work/projects/backup/cache',
          'btrfs', '10h10d'),
-        #('/mnt/work/projects/backup/cache/diablo',
-        # '/mnt/work/projects/backup/pool',
-        # 'btrfs', '6m1y'),
-
-        #('/mnt/work/projects/backup/pool/games',
-        # '/mnt/work/projects/backup/pool',
-        # 'btrfs', '6m'),
-        #('/mnt/work/projects/backup/pool/video',
-        # '/mnt/work/projects/backup/pool',
-        # 'btrfs', '6m'),
-
-        # external backup
-        ('/mnt/work/projects/backup/cache/diablo.2*',
-         '/mnt/work/projects/backup',
-         'btrfs', ''),
-        #('/mnt/work/projects/backup/pool/diablo*',
-        # '/mnt/work/projects/backup/extpool',
-        # 'btrfs', 'clone'),
+         
+        # just reading snapshots from pool via glob is cached by OS, spinups are avoided
+        ('/mnt/work/projects/backup/cache/diablo',
+         '/mnt/work/projects/backup/pool',
+         'btrfs', '2d6m'),
+        ('/mnt/work/projects/backup/pool/games',
+         '/mnt/work/projects/backup/pool',
+         'btrfs', '2d6m'),
+        ('/mnt/work/projects/backup/pool/video',
+         '/mnt/work/projects/backup/pool',
+         'btrfs', '2d6m'),
     ),
-    
-    }
+}
 
 manual_tasks = {
     'diablo': (
+        ('/mnt/work/projects/backup/cache/diablo',
+         '/run/media/schweizer/extpool',
+         'btrfs', '6m4y'),
+        ('/mnt/work/projects/backup/pool/games',
+         '/run/media/schweizer/extpool',
+         'btrfs', '6m4y'),
+        ('/mnt/work/projects/backup/pool/video',
+         '/run/media/schweizer/extpool',
+         'btrfs', '6m4y'),
+
+        ('02282962282955C7',
+         '/run/media/schweizer/extpool/win7.img',
+         'partclone', 'ntfs'),
+
         # unison example
         #('/mnt/video/',
         # '/tmp/backup/video/unison/',
         # 'unison', '-batch -ignore "Path movies" -ignore "Path 0_sort"'),
-        ),
-    }
+    ),
+}
 
 import os
 import gentoo.job
@@ -82,8 +88,9 @@ class adm_backup(pylon.base.base):
     def run_core(self):
         # initialize enabled backup engines
         for engine in transfer_engines:
-            module = getattr(__import__('gentoo.backup_' + engine), 'backup_' + engine)
-            setattr(self, engine, getattr(module, 'backup_' + engine)(owner=self))
+            if not self.ui.args.engine or engine == self.ui.args.engine:
+                module = getattr(__import__('gentoo.backup_' + engine), 'backup_' + engine)
+                setattr(self, engine, getattr(module, 'backup_' + engine)(owner=self))
 
         import datetime
         t1 = datetime.datetime.now()
@@ -94,7 +101,7 @@ class adm_backup(pylon.base.base):
 
         # lock backup dest to prevent overlapping backup
         import hashlib
-        lock_path = '/tmp/' + self.__class__.__name__ + hashlib.md5(src_path + dest_path).hexdigest()
+        lock_path = '/tmp/' + self.__class__.__name__ + hashlib.md5(src_path.encode('utf-8') + dest_path.encode('utf-8')).hexdigest()
         try:
             os.makedirs(lock_path)
         except OSError:
@@ -110,16 +117,6 @@ class adm_backup(pylon.base.base):
         return ((not self.ui.args.engine or self.ui.args.engine == engine) and
                 (not self.ui.args.src    or self.ui.args.src == src))
             
-    def adm_backup_pre(self):
-        'perform host-specific preprocessing'
-        if hasattr(self, self.ui.hostname + '_pre'):
-            getattr(self, self.ui.hostname + '_pre')()
-
-    def adm_backup_post(self):
-        'perform host-specific postprocessing'
-        if hasattr(self, self.ui.hostname + '_post'):
-            getattr(self, self.ui.hostname + '_post')()
-
     def adm_backup_auto(self):
         'perform host-specific automatic tasks'
         for (src, dest, engine, opts) in auto_tasks[self.ui.hostname]:
@@ -161,30 +158,6 @@ class adm_backup(pylon.base.base):
         pprint.pprint(auto_tasks)
         self.ui.info('Manual tasks:')
         pprint.pprint(manual_tasks)
-
-    # FIXME
-    #def baal_pre(self):
-    #    self.ui.debug('Mounting LUKS backup drive...')
-    #    self.dispatch('cryptsetup luksOpen /dev/sdh1 backup',
-    #                  output='both')
-    #    self.dispatch('mount /dev/mapper/backup /media/backup',
-    #                  output='both')
-    #    try:
-    #        self.dispatch('mkdir /tmp/backup',
-    #                      output=None)
-    #    except self.exc_class:
-    #        pass
-    #    self.dispatch('mount -o bind /media/backup/data /tmp/backup',
-    #                  output='both')
-    # 
-    #def baal_post(self):
-    #    self.ui.debug('Unmounting LUKS backup drive...')
-    #    self.dispatch('umount /tmp/backup',
-    #                  output='both')
-    #    self.dispatch('umount /media/backup',
-    #                  output='both')
-    #    self.dispatch('cryptsetup luksClose backup',
-    #                  output='both')
 
 if __name__ == '__main__':
     app = adm_backup(job_class=gentoo.job.job,
