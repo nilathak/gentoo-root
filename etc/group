@@ -5,10 +5,8 @@ bin:x:1:root,bin,daemon
 cdrom:x:19:schweizer
 console:x:17:
 daemon:x:2:root,bin,daemon
-ddclient:x:414:
 disk:x:6:root,schweizer
 eclipse:x:411:
-fcron:x:412:root,schweizer
 floppy:x:11:root
 games:x:35:schweizer
 kmem:x:9:
@@ -37,9 +35,7 @@ tty:x:5:schweizer
 usb:x:85:schweizer
 users:x:100:schweizer
 utmp:x:406:
-uucp:x:14:uucp,schweizer
 video:x:27:root,schweizer
-vmware:x:409:schweizer
 wheel:x:10:root,schweizer
 lpadmin:x:106:
 cron:x:16:
@@ -53,12 +49,9 @@ lock:x:998:
 hsqldb:x:997:
 dovecot:x:97:
 dovenull:x:109:
-android:x:996:schweizer
 realtime:x:995:schweizer
 tor:x:994:
-bitcoin:x:993:
 polkitd:x:992:
 dnsmasq:x:991:
-named:x:40:
 input:x:990:
 crontab:x:989:
