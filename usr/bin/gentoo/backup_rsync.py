@@ -42,6 +42,7 @@ class backup_rsync(pylon.base.base):
                       # paths
                       src_path + ' ' + dest_path,
                       output='both')
+        self.ui.info('Saved {0} to {1}'.format(src_path, dest_path))
 
     def info(self, src_path, dest_path, opts=''):
         self.ui.info('Differences {0} <-> {1}...'.format(src_path, dest_path))

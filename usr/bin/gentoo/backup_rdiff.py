@@ -24,6 +24,7 @@
 #              contents of two different rdiff-backup sessions.
 # ====================================================================
 import datetime
+import functools
 import os
 import re
 import pylon.base

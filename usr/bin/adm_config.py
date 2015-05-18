@@ -9,6 +9,7 @@
 # ====================================================================
 # HOWTO
 # - start always with checked out host branch
+# - ADDING TO MASTER: git add and deliver_master will work, but be careful to commit host-specific ADDs to host branch
 # - if MD5 sums are equal and file is not needed anymore: checkin any pending changes, git rm in respective working tree,
 # - after deliver_master has been executed on one host, use git pull to see changes on other host
 # - host MUST NEVER be merged onto master; PREFERABLY operate on master directly, or just cherry-pick from host to master:
@@ -23,27 +24,13 @@
 #
 # TODO
 # - howto easily move a default file from master to specific host branches? authorized_keys?
-# - directly save /usr/src/linux/.config instead of /usr/src/config (wrap has its own kernel now anyway)
 # - MASTER ADD
 # - DIABLO ADD
-#   - cruft(2015-03-21 14:27:42,048) ERROR: net-misc/dhcpcd-6.6.7: /etc/dhcpcd.conf has incorrect MD5sum
 #   - cruft(2015-03-21 14:27:49,138) ERROR: net-wireless/hostapd-2.3: /etc/hostapd/hostapd.wpa_psk has incorrect MD5sum
 #   - cruft(2015-03-21 14:28:20,970) ERROR: sys-apps/smartmontools-6.3: /etc/smartd.conf has incorrect MD5sum
+#     DEVICESCAN -a -n standby,q -I 194 -W 0,0,40 -m root@localhost -C 197+ -U 198+
 #   - cruft(2015-03-21 14:29:46,330) ERROR: www-servers/apache-2.2.29: /etc/conf.d/apache2 has incorrect MD5sum (REALLY NEEDED???????)
-#   - /etc/resolv.conf.head really needed? Feb  2 03:59:00 diablo dnsmasq[2183]: ignoring nameserver 192.168.0.1 - local interface
 # - BELIAL ADD
-# - NEEDED anywhere???
-#   - /etc/security/limits.conf
-
-#===================wrap-specific
-#/etc/inittab
-#/etc/portage/package.keywords
-#/etc/portage/package.mask
-#/etc/portage/package.use
-#/root/.ssh/authorized_keys
-###########REMOVE/REVERT
-#belial/etc/portage/profile/package.provided
-
 ##############################################
 
 repo_path = '/mnt/Dropbox/work/projects/workspace/gentoo-repo'
