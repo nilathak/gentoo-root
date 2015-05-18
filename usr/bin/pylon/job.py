@@ -129,7 +129,6 @@ output:
                         self._output = 'stderr'
 
                 # decode output string
-                stdin  = None
                 stdout = subprocess.PIPE
                 stderr = subprocess.PIPE
                 if self._output == 'nopipes':
@@ -149,12 +148,12 @@ output:
                     self._proc = subprocess.Popen(self._cmd, shell=True,
                                                   # always use bash
                                                   executable='/bin/bash',
-                                                  stdin=stdin,
+                                                  stdin=None,
                                                   stdout=stdout,
                                                   stderr=stderr)
 
                     while self._proc.poll() == None:
-                        (proc_stdout_b, proc_stderr_b) = self._proc.communicate(stdin)
+                        (proc_stdout_b, proc_stderr_b) = self._proc.communicate(None)
 
                         if proc_stdout_b:
                             proc_stdout = proc_stdout_b.decode().rstrip(os.linesep).rsplit(os.linesep)
