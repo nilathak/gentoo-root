@@ -103,19 +103,55 @@ class adm_portage(pylon.base.base):
         except self.exc_class:
             pass
 
-        self.ui.info('Searching for multiple suid/sgid links (someone may try to retain older versions of binaries, eg avoiding security fixes)')
+        self.ui.info('Checking for sane system file permissions...')
         # =========================================================
-        self.dispatch('cd /; find . -xdev -type f \( -perm -004000 -o -perm -002000 \) -links +1 -ls',
-                      output='stdout')
-        self.ui.info('Searching for world/group writeable dirs')
-        # =========================================================
-        self.dispatch('cd /; find . -xdev -path "./home" -prune -o -type d \( -perm -2 -o -perm -20 \) | grep -v "^./var" | grep -v "^./home" | grep -v "^./usr/portage" | grep -v "^./tmp" | xargs ls -ldg',
-                      output='stdout')
-        self.ui.info('Searching for world/group writeable files')
-        # =========================================================
-        self.dispatch('cd /; find . -xdev -path "./home" -prune -o -type f \( -perm -2 -o -perm -20 \) | grep -v "^./var" | grep -v "^./home" | grep -v "^./usr/portage" | grep -v "^./tmp" | xargs ls -ldg',
-                      output='stdout')
+        import copy
+        import os
+        import stat
+        
+        dir_exceptions = (
+            '/dev',
+            '/home',
+            '/mnt',
+            '/proc',
+            '/run',
+            '/sys',
+            '/usr/portage/distfiles',
+            '/tmp',
+            '/var',
+            )
+        file_exceptions = (
+            )
+        for root, dirs, files in os.walk('/', onerror=lambda x: self.ui.error(str(x))):
+            for d in copy.copy(dirs):
+                if os.path.join(root, d) in dir_exceptions:
+                    dirs.remove(d)
+            for f in copy.copy(files):
+                if os.path.join(root, f) in file_exceptions:
+                    files.remove(f)
+                    
+            for d in dirs:
+                dir = os.path.join(root, d)
+                if (os.stat(dir).st_mode & stat.S_IWGRP or
+                    os.stat(dir).st_mode & stat.S_IWOTH):
+                    self.ui.warning('Found world/group writeable dir: ' + dir)
+                    
+            for f in files:
+                try:
+                    file = os.path.join(root, f)
+                    if (os.stat(file).st_mode & stat.S_IWGRP or
+                        os.stat(file).st_mode & stat.S_IWOTH):
+                        self.ui.warning('Found world/group writeable file: ' + file)
 
+                    if (os.stat(file).st_mode & stat.S_ISGID or
+                        os.stat(file).st_mode & stat.S_ISUID):
+                        if (os.stat(file).st_nlink > 1):
+                            # someone may try to retain older versions of binaries, eg avoiding security fixes
+                            self.ui.warning('Found suid/sgid file with multiple links: ' + file)
+                except Exception as e:
+                    # dead links are reported by cruft anyway
+                    pass
+                        
     def adm_portage_update(self):
         'performs the update'
 
