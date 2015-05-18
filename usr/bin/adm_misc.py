@@ -130,14 +130,13 @@ class adm_misc(pylon.base.base):
         'mount wrap image for local administration'
 
         # FIXME
-        # - cp diablo resolv.conf to wrap image
-        # - config files
-        #   - added: package.keywords, package.mask, package.unmask, package.use, wpa_supplicant.conf
-        #   - removed: /etc/portage/profile/package.provided
-        # - source common make.conf in specific make.conf file on each machine
-        # - removed (check with cruft): emerge -C dev-vcs/mercurial net-dns/ddclient net-dns/dnsmasq net-firewall/iptables net-misc/ethercard-diag net-misc/openvpn net-wireless/hostapd net-wireless/wireless-tools sys-apps/iproute2 sys-process/fcron
-        # - installed: emerge gentoo-sources dev-vcs/git
-
+        #Loading Linux 3.18.7-gentoo ...
+        #CPU: vendor_id 'Geode by NSC' unknown, using generic init.
+        #CPU: Your system may be unstable.
+        #i8042: No controller found
+        #sc1200wdt: io parameter must be specified
+        #mce: Unable to init device /dev/mcelog (rc: -5)
+        
         # Notice: NX (Execute Disable) protection missing in CPU!
         # DMI not present or invalid.
         # raid6: mmxx1       35 MB/s
@@ -148,11 +147,6 @@ class adm_misc(pylon.base.base):
         # raid6: int32x8     23 MB/s
         # raid6: using algorithm mmxx2 (58 MB/s)
         # raid6: using intx1 recovery algorithm
-        #  
-        # rm: cannot remove /lib/rc/console/font: Read-only file system
-        # rm: cannot remove /lib/rc/console/keymap: Read-only file system
-        # rm: cannot remove /lib/rc/console/unicode: Read-only file system
-        # rm: cannot remove /tmp/tmp.BzZNzL5AYX/run/mount/utab: Read-only file system
         #  
         #  * Setting console font [lat9w-16] ...
         #  [ ok ]
@@ -180,19 +174,18 @@ class adm_misc(pylon.base.base):
             '--exclude="/run/"',
             '--exclude="/sys/"',
             '--exclude="/tmp/"',
-            #'--exclude="/var/cache/"',
-            # FIXME re-evaluate if it's OK to sync
-            '--exclude="/var/lib/"',
-            '--exclude="/var/log/"',
-            '--exclude="/var/spool/"',
+            '--exclude="/var/dhcpcd/dhcpcd-wlan0.lease"',
+            '--exclude="/var/lib/ntpd.drift"',
+            '--exclude="/var/lib/postfix/master.lock"',
+            '--exclude="/var/lib/syslog-ng/syslog-ng.persist"',
+            '--exclude="/var/log/"', # services will only run on the actual device
+            '--exclude="/var/spool/"', # cron, postfix
         )
         bind_map = (
             # local, device
             ('/dev', '/dev'),
-            ('/mnt', '/mnt'),
-            # timeout issue when umounting 3 nfs mounts in a row => really needed for belial?
-            #('/mnt/software/linux', '/mnt/software/linux'),  # needed for exec rights
-            #('/mnt/work/projects', '/mnt/work/projects'),  # needed for exec rights
+            ('/dev/pts', '/dev/pts'),
+            ('/mnt', '/mnt'), # without games & video
             ('/proc', '/proc'),
             ('/sys', '/sys'),
             ('/tmp', '/tmp'),
@@ -283,6 +276,9 @@ class adm_misc(pylon.base.base):
                 '/dev/mapper/cache0',
                 '/dev/mapper/pool0',
             ),
+            'belial': (
+                '/dev/sda1',
+            ),
         }
 
         # scrubbing
@@ -296,22 +292,24 @@ class adm_misc(pylon.base.base):
 
         # balance
         # =======
-        # the balance command can do a lot of things (eg, also adding devices in RAID configuration),
-        # here we use it to reclaim back the space of the underused chunks so it can be allocated again according to current needs
-        # The point is to prevent some corner cases where it's not possible to allocate new metadata chunks because the whole device
-        # space is reserved for all the chunks, although the total space occupied is smaller.
-
-        # rebalancing recommended if used values are nearing total values
-        # FIXME metadata balancing is automatic in starting from 3.18, after switching to 3.18 trigger metadata balancing one more time manually
-        # Data, single: total=209.01GiB, used=186.13GiB
-        # System, DUP: total=8.00MiB, used=48.00KiB
-        # System, single: total=4.00MiB, used=0.00B
-        # Metadata, DUP: total=4.50GiB, used=2.86GiB
-        # Metadata, single: total=8.00MiB, used=0.00B
-        # GlobalReserve, single: total=512.00MiB, used=0.00B
+        # - the balance command can do a lot of things (eg, also adding devices in RAID configuration),
+        #   here we use it to reclaim back the space of the underused chunks so it can be allocated again according to current needs
+        # - The point is to prevent some corner cases where it's not possible to allocate new metadata chunks because the whole device
+        #   space is reserved for all the chunks, although the total space occupied is smaller.
+        # - at least free chunks are now automatically freed with 3.18+ (eg, btrfs balance start -dusage=0)
+        # - IN GENERAL: rebalancing recommended if used values are nearing total values (btrfs fi usage <mp>)
+        #   Data,single: Size:225.82GiB, Used:195.36GiB
+        #      /dev/mapper/cache0    225.82GiB
+        #    
+        #   Metadata,DUP: Size:3.50GiB, Used:1.97GiB
+        #      /dev/mapper/cache0      7.00GiB
+        #    
+        #   System,DUP: Size:32.00MiB, Used:48.00KiB
+        #      /dev/mapper/cache0     64.00MiB
         
-        # ct recommended command which keeps data relocation to a minimum: btrfs balance start -musage=50 -dusage=50 <mp>
+        # ct recommended command which keeps data relocation to a minimum: btrfs balance start -v -musage=50 -dusage=50 <mp>
         # if balance command bails out with ENOSPC error on a nearly full device, use -musage=0 -dusage=0 to delete unused chunks first
+        # the bigger the -dusage value, the more work balance will have to do (taking fuller and fuller blocks and trying to free them up by putting their data elsewhere)
 
         # stack overflow recommendation: btrfs balance start -dusage=20 <mp>
         # https://stackoverflow.com/questions/22286618/massive-btrfs-performance-degradation
@@ -349,9 +347,11 @@ class adm_misc(pylon.base.base):
             '/mnt/games',
             '/mnt/video',
         )
+
+        frequency_per_hour = 4
         
         # script will be run via cron.hourly
-        for i in range(6):
+        for i in range(frequency_per_hour):
 
             self.ui.debug('checking for ongoing IO operations using a practical hysteresis')
             try:
@@ -364,8 +364,8 @@ class adm_misc(pylon.base.base):
             except self.exc_class:
                 raise self.exc_class("Container HDD not found!")
             
-            # 60s buffer to next cron job
-            time.sleep(15 * 59)
+            # 60s buffer to next run-crons job
+            time.sleep(60 / frequency_per_hour * 59)
             
             io_ops_2nd = self.dispatch('cat /proc/diskstats | grep ' + device,
                                        passive=True,
@@ -383,7 +383,6 @@ class adm_misc(pylon.base.base):
     def adm_misc_check_rights(self):
         # ====================================================================
         'set access rights on fileserver'
-
         public = (
             '/mnt/audio',
             '/mnt/docs',
