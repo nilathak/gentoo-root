@@ -1,17 +1,4 @@
-import datetime
-import glob
-import hashlib
-import math
-import os
-import pylon.base as base
-import re
-import threading
-
-snapshot_pattern = '%Y-%m-%dT%H-%M-%S'
-snapshot_regex = '[0-9]*-[0-9]*-[0-9]*T[0-9]*-[0-9]*-[0-9]*'
-
-class backup_btrfs(base.base):
-    """
+'''
 implement btrfs subvolume snapshot backups based on interval string
 
 NOTES
@@ -34,7 +21,24 @@ NOTES
   it would only make sense for snapshots which show a large "exclusive size" (3rd column in qgroup output), which can be elevated
   for snapshots containing many large transient files (downloads, caches, ...), but it's generally better to decrease
   snapshot retention time in this case
-"""
+'''
+    
+import datetime
+import glob
+import hashlib
+import math
+import os
+import pylon.base as base
+import re
+import sys
+import threading
+
+snapshot_pattern = '%Y-%m-%dT%H-%M-%S'
+snapshot_regex = '[0-9]*-[0-9]*-[0-9]*T[0-9]*-[0-9]*-[0-9]*'
+
+class backup_btrfs(base.base):
+
+    __doc__ = sys.modules[__name__].__doc__
     
     @classmethod
     def unique_logspace(cls, data_points, interval_range):

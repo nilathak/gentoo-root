@@ -1,16 +1,4 @@
-import datetime
-import functools
-import os
-import pylon.base as base
-import re
-
-output_pat = re.compile('(.*)\s+([0-9]+[.]*[0-9]*)\s+(\w+)\s+[0-9]+.*')
-remove_older_limit      = 2.0
-remove_hysteresis_limit = 1.7
-diff_date_format   = '%a %b %d %H:%M:%S %Y'
-
-class backup_rdiff(base.base):
-    """
+'''
 implement backups using rdiff-backup
 
 GENERAL TIPS n' TRICKS
@@ -29,9 +17,24 @@ RESTORING TIPS n' TRICKS
              List the files that have changed in the destination directory since the given time.  See TIME FORMATS for the format of time.  If a directory  in
              the  archive  is  specified, list only the files under that directory.  This option does not read the source directory; it is used to compare the
              contents of two different rdiff-backup sessions.
-    """
+'''
 
+import datetime
+import functools
+import os
+import pylon.base as base
+import re
+import sys
 
+output_pat = re.compile('(.*)\s+([0-9]+[.]*[0-9]*)\s+(\w+)\s+[0-9]+.*')
+remove_older_limit      = 2.0
+remove_hysteresis_limit = 1.7
+diff_date_format   = '%a %b %d %H:%M:%S %Y'
+
+class backup_rdiff(base.base):
+
+    __doc__ = sys.modules[__name__].__doc__
+    
     @functools.lru_cache(typed=True)
     def determine_obsolete_diff_sets(self, dest_path, opts=''):
         'determine if remove_older_limit has been reached'

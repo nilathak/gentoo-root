@@ -1,8 +1,4 @@
-import os
-import pylon.base as base
-
-class backup_partclone(base.base):
-    """
+'''
 implement efficient partition cloning module
 
 Clonezilla uses partclone as default, partimage/ntfsclone are optional.
@@ -11,8 +7,16 @@ Basically partclone.ntfs and ntfsclone are the same. Both of them are based on t
 - TUI (Terminal User Interface) output is available for partclone.
 - partclone can do partition clone directly, eg partclone.ntfs -b -s /dev/sda1 -O /dev/sdb1. With ntfsclone you have to pipe.
 - More messages are shown when running partclone.
-    """
+'''
+    
+import os
+import pylon.base as base
+import sys
 
+class backup_partclone(base.base):
+
+    __doc__ = sys.modules[__name__].__doc__
+    
     def do(self, src_path, dest_path, opts=''):
 
         # - determine partition from UUID in src_path

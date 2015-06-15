@@ -82,8 +82,7 @@ class adm_backup(base.base):
         # initialize enabled backup engines
         for engine in transfer_engines:
             if not self.ui.args.engine or engine == self.ui.args.engine:
-                module = getattr(__import__('gentoo.backup_' + engine), 'backup_' + engine)
-                setattr(self, engine, getattr(module, 'backup_' + engine)(owner=self))
+                setattr(self, engine, getattr(__import__('backup_' + engine), 'backup_' + engine)(owner=self))
         t1 = datetime.datetime.now()
         getattr(self, self.__class__.__name__ + '_' + self.ui.args.op)()
         self.ui.info(self.ui.args.op + ' took ' + str(datetime.datetime.now() - t1) + ' to complete...')

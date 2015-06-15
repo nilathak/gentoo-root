@@ -1,36 +1,5 @@
 #!/usr/bin/env python3
-import functools
-import logging
-import os
-import pylon.base as base
-import pylon.gentoo.job as job
-import pylon.gentoo.ui as ui
-
-repo_path = '/mnt/Dropbox/work/projects/gentoo-repo'
-hosts = [
-    'diablo',
-    'belial',
-    ]
-
-# always chdir to work-tree to avoid long relative paths when using --git-dir + --work-tree and calling this script from arbitrary directory
-git_cmd = 'cd / && git '
-
-class ui(ui.ui):
-    def __init__(self, owner):
-        super().__init__(owner)
-        self.init_op_parser()
-        self.parser_deliver_master.add_argument('-s', '--skip', action='count', default=0,
-                                                help='resume deliver after manual conflict resolution (s=continue after origin/master pull, ss=continue after host rebase)')
-
-    def setup(self):
-        super().setup()
-        if not self.args.op:
-            raise self.owner.exc_class('Specify at least one subcommand operation')
-        if self.hostname not in hosts:
-            raise self.owner.exc_class('unknown host ' + self.hostname)
-
-class adm_config(base.base):
-    """
+'''
 Manage config files across multiple hosts
 
 HOWTO
@@ -65,8 +34,42 @@ KEEP JUST FOR HOST/MASTER distinction
     DEVICESCAN -a -n standby,q -I 194 -W 0,0,40 -m root@localhost -C 197+ -U 198+
   - cruft(2015-03-21 14:29:46,330) ERROR: www-servers/apache-2.2.29: /etc/conf.d/apache2 has incorrect MD5sum (REALLY NEEDED???????)
 - BELIAL ADD
-"""
+'''
 
+import functools
+import logging
+import os
+import pylon.base as base
+import pylon.gentoo.job as job
+import pylon.gentoo.ui as ui
+import sys
+
+hosts = [
+    'diablo',
+    'belial',
+    ]
+
+# always chdir to work-tree to avoid long relative paths when using --git-dir + --work-tree and calling this script from arbitrary directory
+git_cmd = 'cd / && git '
+
+class ui(ui.ui):
+    def __init__(self, owner):
+        super().__init__(owner)
+        self.init_op_parser()
+        self.parser_deliver_master.add_argument('-s', '--skip', action='count', default=0,
+                                                help='resume deliver after manual conflict resolution (s=continue after origin/master pull, ss=continue after host rebase)')
+
+    def setup(self):
+        super().setup()
+        if not self.args.op:
+            raise self.owner.exc_class('Specify at least one subcommand operation')
+        if self.hostname not in hosts:
+            raise self.owner.exc_class('unknown host ' + self.hostname)
+
+class adm_config(base.base):
+
+    __doc__ = sys.modules[__name__].__doc__
+    
     def run_core(self):
         getattr(self, self.__class__.__name__ + '_' + self.ui.args.op)()
 
