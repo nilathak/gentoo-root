@@ -1,22 +1,15 @@
 #!/usr/bin/env python3
-# ====================================================================
-# Copyright (c) Hannes Schweizer <hschweizer@gmx.net>
-#
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 3, or (at your option)
-# any later version.
-# ====================================================================
-
 import copy
+import errno
 import multiprocessing
 import os
+import pylon.base as base
+import pylon.gentoo.job as job
+import pylon.gentoo.ui as ui
 import re
-import gentoo.job
-import gentoo.ui
-import pylon.base
+import time
 
-class ui(gentoo.ui.ui):
+class ui(ui.ui):
     def __init__(self, owner):
         super().__init__(owner)
         self.parser_common.add_argument('-o', '--options',
@@ -32,7 +25,7 @@ class ui(gentoo.ui.ui):
         if not self.args.op:
             raise self.owner.exc_class('Specify at least one subcommand operation')
         
-class adm_misc(pylon.base.base):
+class adm_misc(base.base):
     'container script for misc admin tasks'
 
     def run_core(self):
@@ -156,13 +149,12 @@ class adm_misc(pylon.base.base):
             try:
                 os.makedirs(path)
             except OSError as exc:
-                import errno
                 if exc.errno == errno.EEXIST:
                     pass
                 else:
                     raise exc
      
-        image = '/mnt/work/projects/led_cube/WRAP.1E.img'
+        image = '/mnt/work/projects/hypnocube/WRAP.1E.img'
         local = '/tmp/wrap'
         device = 'belial'
         rsync_exclude = (
@@ -280,68 +272,39 @@ class adm_misc(pylon.base.base):
                 '/dev/sda1',
             ),
         }
+        btrfs_mountpoint = {
+            'diablo': (
+                '/',
+                '/mnt/games',
+                '/mnt/video',
+            ),
+            'belial': (
+                '/',
+            ),
+        }
 
-        # scrubbing
-        # =========
-        # - btrfs check on unmounted filesystem only necessary if btrfs scrub shows errors
-        # - Data blocks are not duplicated unless you have RAID1 or higher, but they are checksummed
-        # - Scrub will therefore know if your metadata is corrupted and typically correct it on its own
-        # - It can also tell you if your data blocks got corrupted, auto fix them if RAID allows, or report them to you in syslog otherwise.
-        for bd in btrfs_devices[self.ui.hostname]:
-            self.dispatch('/sbin/btrfs scrub start -BR ' + bd)
+        # FIXME resume interrupted scrub?
+        for p in btrfs_devices[self.ui.hostname]:
+            self.ui.info('Scrubbing {0}...'.format(p))
+            self.dispatch('/sbin/btrfs scrub start -BR ' + p)
 
-        # balance
-        # =======
-        # - the balance command can do a lot of things (eg, also adding devices in RAID configuration),
-        #   here we use it to reclaim back the space of the underused chunks so it can be allocated again according to current needs
-        # - The point is to prevent some corner cases where it's not possible to allocate new metadata chunks because the whole device
-        #   space is reserved for all the chunks, although the total space occupied is smaller.
-        # - at least free chunks are now automatically freed with 3.18+ (eg, btrfs balance start -dusage=0)
-        # - IN GENERAL: rebalancing recommended if used values are nearing total values (btrfs fi usage <mp>)
-        #   Data,single: Size:225.82GiB, Used:195.36GiB
-        #      /dev/mapper/cache0    225.82GiB
-        #    
-        #   Metadata,DUP: Size:3.50GiB, Used:1.97GiB
-        #      /dev/mapper/cache0      7.00GiB
-        #    
-        #   System,DUP: Size:32.00MiB, Used:48.00KiB
-        #      /dev/mapper/cache0     64.00MiB
+        # FIXME resume interrupted balancing?
+        for p in btrfs_mountpoint[self.ui.hostname]:
+            self.ui.info('Balancing metadata + data chunks for {0}...'.format(p))
+            self.dispatch('/usr/bin/ionice -c 3 /sbin/btrfs balance start -v -musage=50 -dusage=50 ' + p)
+            self.dispatch('/sbin/btrfs fi usage ' + p)
         
-        # ct recommended command which keeps data relocation to a minimum: btrfs balance start -v -musage=50 -dusage=50 <mp>
-        # if balance command bails out with ENOSPC error on a nearly full device, use -musage=0 -dusage=0 to delete unused chunks first
-        # the bigger the -dusage value, the more work balance will have to do (taking fuller and fuller blocks and trying to free them up by putting their data elsewhere)
-
-        # stack overflow recommendation: btrfs balance start -dusage=20 <mp>
-        # https://stackoverflow.com/questions/22286618/massive-btrfs-performance-degradation
-
-        # check command duration for different -dusage percentages using: btrfs balance status
-        
-        # defrag
-        # ======
-        # A copy-on-write filesystem maintains many changes of a single file, which is helpful for snapshotting and other advanced features,
-        # but can lead to fragmentation with some workloads.
-        # If you have a virtual disk image, or a database file that gets written randomly in the middle, Copy On Write is going to cause many
-        # fragments since each write is a new fragment (eg, virtualbox images can grow 100,000 fragments quickly). You can turn off COW for specific
-        # files and directories with chattr -C /path (new files will inherit this).
-        # Do not enable autodefrag or run defrag manually on specific folders, since it will break the reflink (COW) property of snapshots
-        # within the volume to be defragged. this will practically double the space needed for each snapshot.
-
-        # OPTIONAL SPEEDUP
-        # btrfs filesystem defragment vbox.vdi could take hours
-        # cp -reflink=never vbox.vdi vbox.vdi.new; rm vbox.vdi
-        # is much faster
-
-        # defrag home folder which contains highly fragmented databases & VM images, increased space usage for 1 month worth of snapshots should be OK.
-        #btrfs_defrag_folders = {
-        #    home directory, or directory which high number of extents:
-        #    find / -xdev -type f -print0 | sed 's/\(.*\)/"\1"/' | xargs -0 filefrag | grep -v ' 0 extent' | grep -v ' 1 extent' | grep -v ' 2 extent'
-        #}
+        # - FIXME perform periodic defrag after "snapshot-aware defragmentation" is available again
+        for p in btrfs_mountpoint[self.ui.hostname]:
+            self.ui.info('Reporting highly defragmented files for {0}...'.format(p))
+            for l in self.dispatch('find {0} -xdev -type f -print0 | sed \'s/\(.*\)/"\\1"/\' | xargs -0 /usr/sbin/filefrag | grep -e " [0-9]\{{3,\}} extent"'.format(p),
+                                   output=None).stdout:
+                self.ui.warning(l)
 
     def adm_misc_spindown(self):
         # ====================================================================
         'force large HDD into standby mode'
 
-        import time
         luks_uuid = 'ab45cdb1-643b-4b29-8448-f68fa65f574e'
         mounts = (
             '/mnt/games',
@@ -454,7 +417,6 @@ class adm_misc(pylon.base.base):
         ## determine list of extracted image files
         ## FIXME check if extracted images are in A4 format (pdfimages does not care if a pdf was scanned or not, this may lead to extracted logo images and such stuff)
         ## FIXME convert to TIF file directly using the -tiff switch of pdfimages
-        #import glob
         #images = glob.iglob('{0}-[0-9]*.ppm'.format(pdf_base))
         #
         #for image in images:
@@ -671,6 +633,6 @@ class adm_misc(pylon.base.base):
                     self.ui.warning('Filesystem objects only distinguished by case: ' + os.path.join(root, name))
 
 if __name__ == '__main__':
-    app = adm_misc(job_class=gentoo.job.job,
+    app = adm_misc(job_class=job.job,
                    ui_class=ui)
     app.run()
