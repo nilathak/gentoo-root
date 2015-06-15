@@ -1,41 +1,36 @@
-# ====================================================================
-# Copyright (c) Hannes Schweizer <hschweizer@gmx.net>
-#
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 3, or (at your option)
-# any later version.
-# ====================================================================
-# GENERAL TIPS n' TRICKS
-#  - NEVER write to the mirror directory
-#
-# RESTORING TIPS n' TRICKS
-#  - use google archfs for convenient access to incremental backups
-#  - rdiff-backup options:
-#       -r, --restore-as-of restore_time
-#              Restore  the  specified directory as it was as of restore_time.  See the TIME FORMATS section for more information on the format of restore_time,
-#              and see the RESTORING section for more information on restoring.
-#       --list-at-time time
-#              List  the  files  in the archive that were present at the given time.  If a directory in the archive is specified, list only the files under that
-#              directory.
-#       --list-changed-since time
-#              List the files that have changed in the destination directory since the given time.  See TIME FORMATS for the format of time.  If a directory  in
-#              the  archive  is  specified, list only the files under that directory.  This option does not read the source directory; it is used to compare the
-#              contents of two different rdiff-backup sessions.
-# ====================================================================
 import datetime
 import functools
 import os
+import pylon.base as base
 import re
-import pylon.base
 
 output_pat = re.compile('(.*)\s+([0-9]+[.]*[0-9]*)\s+(\w+)\s+[0-9]+.*')
 remove_older_limit      = 2.0
 remove_hysteresis_limit = 1.7
 diff_date_format   = '%a %b %d %H:%M:%S %Y'
 
-class backup_rdiff(pylon.base.base):
-    'implement backups using rdiff-backup'
+class backup_rdiff(base.base):
+    """
+implement backups using rdiff-backup
+
+GENERAL TIPS n' TRICKS
+ - NEVER write to the mirror directory
+
+RESTORING TIPS n' TRICKS
+ - use google archfs for convenient access to incremental backups
+ - rdiff-backup options:
+      -r, --restore-as-of restore_time
+             Restore  the  specified directory as it was as of restore_time.  See the TIME FORMATS section for more information on the format of restore_time,
+             and see the RESTORING section for more information on restoring.
+      --list-at-time time
+             List  the  files  in the archive that were present at the given time.  If a directory in the archive is specified, list only the files under that
+             directory.
+      --list-changed-since time
+             List the files that have changed in the destination directory since the given time.  See TIME FORMATS for the format of time.  If a directory  in
+             the  archive  is  specified, list only the files under that directory.  This option does not read the source directory; it is used to compare the
+             contents of two different rdiff-backup sessions.
+    """
+
 
     @functools.lru_cache(typed=True)
     def determine_obsolete_diff_sets(self, dest_path, opts=''):
@@ -91,7 +86,7 @@ class backup_rdiff(pylon.base.base):
             previous_key = k
 
         if obsolete_diff_key:
-            s = []
+            s = list()
             for k in ascending_date_keys:
                 norm_str = '{0} = {1:15.2f}'.format(k.strftime(diff_date_format), diff_sizes[k])
                 if k < oldest_retained_key:

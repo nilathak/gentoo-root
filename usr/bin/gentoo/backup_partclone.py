@@ -1,16 +1,17 @@
-# ====================================================================
-# Copyright (c) Hannes Schweizer <hschweizer@gmx.net>
-#
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 3, or (at your option)
-# any later version.
-# ====================================================================
 import os
-import pylon.base
+import pylon.base as base
 
-class backup_partclone(pylon.base.base):
-    'implement efficient partition cloning module.'
+class backup_partclone(base.base):
+    """
+implement efficient partition cloning module
+
+Clonezilla uses partclone as default, partimage/ntfsclone are optional.
+Basically partclone.ntfs and ntfsclone are the same. Both of them are based on the libntfs. However, partclone.ntfs has some improvements:
+- CRC checking info is stored.
+- TUI (Terminal User Interface) output is available for partclone.
+- partclone can do partition clone directly, eg partclone.ntfs -b -s /dev/sda1 -O /dev/sdb1. With ntfsclone you have to pipe.
+- More messages are shown when running partclone.
+    """
 
     def do(self, src_path, dest_path, opts=''):
 
@@ -18,9 +19,9 @@ class backup_partclone(pylon.base.base):
         partition = self.dispatch('findfs UUID={0}'.format(src_path), passive=True, output=None).stdout[0]
     
         self.ui.info('Saving {0} to {1}...'.format(partition, dest_path))
-        # FIXME determine verbosity of -d option
-        self.dispatch('partclone.{0} -c -d -s {1} -o {2}'.format(opts, partition, dest_path),
+        self.dispatch('partclone.{0} -c -s {1} -O {2}'.format(opts, partition, dest_path),
                       output='both')
+        self.ui.info('Saved {0} to {1}'.format(partition, dest_path))
         
     def info(self, src_path, dest_path, opts=''):
         self.ui.info('Showing partclone image header for {0}...'.format(dest_path))

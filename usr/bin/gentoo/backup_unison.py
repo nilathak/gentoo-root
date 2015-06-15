@@ -1,14 +1,6 @@
-# ====================================================================
-# Copyright (c) Hannes Schweizer <hschweizer@gmx.net>
-#
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 3, or (at your option)
-# any later version.
-# ====================================================================
-import pylon.base
+import pylon.base as base
 
-class backup_unison(pylon.base.base):
+class backup_unison(base.base):
     'implement semi-automated unison synchronization'
 
     def do(self, src_path, dest_path, opts=''):
