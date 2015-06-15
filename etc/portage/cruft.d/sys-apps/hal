@@ -1,5 +1,0 @@
-# sample policies are usually copied from
-# /usr/share/hal/fdi/policy
-^/etc/hal/fdi/policy$
-
-^/var/cache/hald$

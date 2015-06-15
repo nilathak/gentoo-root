@@ -1,3 +1,0 @@
-^/var/run/syslog-ng\.ctl$
-^/var/run/syslog-ng\.pid$
-^/var/lib/syslog-ng/syslog-ng\.persist$

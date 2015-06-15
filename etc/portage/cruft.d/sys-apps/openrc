@@ -1,4 +1,0 @@
-# run cache directory (mounted tmpfs)
-^/run$
-
-^/var/log/rc\.log$
