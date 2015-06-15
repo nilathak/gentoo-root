@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-# ====================================================================
-# Copyright (c) Hannes Schweizer <hschweizer@gmx.net>
-#
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 3, or (at your option)
-# any later version.
-# ====================================================================
+import datetime
+import hashlib
+import os
+import pprint
+import pylon.base as base
+import pylon.gentoo.job as job
+import pylon.gentoo.ui as ui
 
 transfer_engines = (
     'btrfs',
@@ -22,16 +21,15 @@ auto_tasks = {
          '/mnt/work/projects/backup/cache',
          'btrfs', '10h10d'),
          
-        # just reading snapshots from pool via glob is cached by OS, spinups are avoided
         ('/mnt/work/projects/backup/cache/diablo',
          '/mnt/work/projects/backup/pool',
-         'btrfs', '2d6m'),
+         'btrfs', '2d1m'),
         ('/mnt/work/projects/backup/pool/games',
          '/mnt/work/projects/backup/pool',
-         'btrfs', '2d6m'),
+         'btrfs', '2d1m'),
         ('/mnt/work/projects/backup/pool/video',
          '/mnt/work/projects/backup/pool',
-         'btrfs', '2d6m'),
+         'btrfs', '2d1m'),
     ),
 }
 
@@ -58,12 +56,7 @@ manual_tasks = {
     ),
 }
 
-import os
-import gentoo.job
-import gentoo.ui
-import pylon.base
-
-class ui(gentoo.ui.ui):
+class ui(ui.ui):
     def __init__(self, owner):
         super().__init__(owner)
 
@@ -82,7 +75,7 @@ class ui(gentoo.ui.ui):
         if self.args.engine and self.args.engine not in transfer_engines:
             raise self.owner.exc_class('unknown backup engine ' + self.args.engine)
         
-class adm_backup(pylon.base.base):
+class adm_backup(base.base):
     'container script for all backup related admin tasks'
 
     def run_core(self):
@@ -91,8 +84,6 @@ class adm_backup(pylon.base.base):
             if not self.ui.args.engine or engine == self.ui.args.engine:
                 module = getattr(__import__('gentoo.backup_' + engine), 'backup_' + engine)
                 setattr(self, engine, getattr(module, 'backup_' + engine)(owner=self))
-
-        import datetime
         t1 = datetime.datetime.now()
         getattr(self, self.__class__.__name__ + '_' + self.ui.args.op)()
         self.ui.info(self.ui.args.op + ' took ' + str(datetime.datetime.now() - t1) + ' to complete...')
@@ -100,7 +91,6 @@ class adm_backup(pylon.base.base):
     def do(self, src_path, dest_path, opts, cmd):
 
         # lock backup dest to prevent overlapping backup
-        import hashlib
         lock_path = '/tmp/' + self.__class__.__name__ + hashlib.md5(src_path.encode('utf-8') + dest_path.encode('utf-8')).hexdigest()
         try:
             os.makedirs(lock_path)
@@ -153,13 +143,12 @@ class adm_backup(pylon.base.base):
 
     def adm_backup_list(self):
         'display list of configured backup tasks'
-        import pprint
         self.ui.info('Automatic tasks:')
         pprint.pprint(auto_tasks)
         self.ui.info('Manual tasks:')
         pprint.pprint(manual_tasks)
 
 if __name__ == '__main__':
-    app = adm_backup(job_class=gentoo.job.job,
+    app = adm_backup(job_class=job.job,
                      ui_class=ui)
     app.run()

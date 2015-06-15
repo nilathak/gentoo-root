@@ -1,22 +1,17 @@
 #!/usr/bin/env python3
-# ====================================================================
-# Copyright (c) Hannes Schweizer <hschweizer@gmx.net>
-#
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 3, or (at your option)
-# any later version.
-# ====================================================================
+import copy
+import datetime
+import os
+import pylon.base as base
+import pylon.gentoo.job as job
+import pylon.gentoo.ui as ui
+import stat
 
 emerge_world     = 'emerge --nospinner --autounmask-keep-masks --with-bdeps=y -uDNv world'
 emerge_depclean  = 'emerge --depclean'
 emerge_pretend   = ' -p'
 
-import gentoo.job
-import gentoo.ui
-import pylon.base
-
-class ui(gentoo.ui.ui):
+class ui(ui.ui):
     def __init__(self, owner):
         super().__init__(owner)
 
@@ -30,11 +25,10 @@ class ui(gentoo.ui.ui):
         if not self.args.op:
             self.args.op = 'qr'
         
-class adm_portage(pylon.base.base):
+class adm_portage(base.base):
     'container script for all portage related admin tasks'
 
     def run_core(self):
-        import datetime
         t1 = datetime.datetime.now()
         getattr(self, self.__class__.__name__ + '_' + self.ui.args.op)()
         self.ui.info(self.ui.args.op + ' took ' + str(datetime.datetime.now() - t1) + ' to complete...')
@@ -105,10 +99,6 @@ class adm_portage(pylon.base.base):
 
         self.ui.info('Checking for sane system file permissions...')
         # =========================================================
-        import copy
-        import os
-        import stat
-        
         dir_exceptions = (
             '/dev',
             '/home',
@@ -122,35 +112,36 @@ class adm_portage(pylon.base.base):
             )
         file_exceptions = (
             )
-        for root, dirs, files in os.walk('/', onerror=lambda x: self.ui.error(str(x))):
-            for d in copy.copy(dirs):
-                if os.path.join(root, d) in dir_exceptions:
-                    dirs.remove(d)
-            for f in copy.copy(files):
-                if os.path.join(root, f) in file_exceptions:
-                    files.remove(f)
-                    
-            for d in dirs:
-                dir = os.path.join(root, d)
-                if (os.stat(dir).st_mode & stat.S_IWGRP or
-                    os.stat(dir).st_mode & stat.S_IWOTH):
-                    self.ui.warning('Found world/group writeable dir: ' + dir)
-                    
-            for f in files:
-                try:
-                    file = os.path.join(root, f)
-                    if (os.stat(file).st_mode & stat.S_IWGRP or
-                        os.stat(file).st_mode & stat.S_IWOTH):
-                        self.ui.warning('Found world/group writeable file: ' + file)
+        if not self.ui.args.dry_run:
+            for root, dirs, files in os.walk('/', onerror=lambda x: self.ui.error(str(x))):
+                for d in copy.copy(dirs):
+                    if os.path.join(root, d) in dir_exceptions:
+                        dirs.remove(d)
+                for f in copy.copy(files):
+                    if os.path.join(root, f) in file_exceptions:
+                        files.remove(f)
 
-                    if (os.stat(file).st_mode & stat.S_ISGID or
-                        os.stat(file).st_mode & stat.S_ISUID):
-                        if (os.stat(file).st_nlink > 1):
-                            # someone may try to retain older versions of binaries, eg avoiding security fixes
-                            self.ui.warning('Found suid/sgid file with multiple links: ' + file)
-                except Exception as e:
-                    # dead links are reported by cruft anyway
-                    pass
+                for d in dirs:
+                    dir = os.path.join(root, d)
+                    if (os.stat(dir).st_mode & stat.S_IWGRP or
+                        os.stat(dir).st_mode & stat.S_IWOTH):
+                        self.ui.warning('Found world/group writeable dir: ' + dir)
+
+                for f in files:
+                    try:
+                        file = os.path.join(root, f)
+                        if (os.stat(file).st_mode & stat.S_IWGRP or
+                            os.stat(file).st_mode & stat.S_IWOTH):
+                            self.ui.warning('Found world/group writeable file: ' + file)
+
+                        if (os.stat(file).st_mode & stat.S_ISGID or
+                            os.stat(file).st_mode & stat.S_ISUID):
+                            if (os.stat(file).st_nlink > 1):
+                                # someone may try to retain older versions of binaries, eg avoiding security fixes
+                                self.ui.warning('Found suid/sgid file with multiple links: ' + file)
+                    except Exception as e:
+                        # dead links are reported by cruft anyway
+                        pass
                         
     def adm_portage_update(self):
         'performs the update'
@@ -181,6 +172,6 @@ class adm_portage(pylon.base.base):
                       output='nopipes')
 
 if __name__ == '__main__':
-    app = adm_portage(job_class=gentoo.job.job,
+    app = adm_portage(job_class=job.job,
                       ui_class=ui)
     app.run()

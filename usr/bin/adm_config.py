@@ -1,55 +1,21 @@
 #!/usr/bin/env python3
-# ====================================================================
-# Copyright (c) Hannes Schweizer <hschweizer@gmx.net>
-#
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation; either version 3, or (at your option)
-# any later version.
-# ====================================================================
-# HOWTO
-# - start always with checked out host branch
-# - ADDING TO MASTER: git add and deliver_master will work, but be careful to commit host-specific ADDs to host branch
-# - if MD5 sums are equal and file is not needed anymore: checkin any pending changes, git rm in respective working tree,
-# - after deliver_master has been executed on one host, use git pull to see changes on other host
-# - host MUST NEVER be merged onto master; PREFERABLY operate on master directly, or just cherry-pick from host to master:
-#   - commit-based cherry picking from host to master tricky (commits containing host+master files need to be split)
-#   git stash && git checkout master
-#   git log diablo
-#   (git show <commit hashes>)
-#   git cherry-pick <commit hashes>
-#   git push && git checkout diablo && git rebase && git branch -d master && git stash pop
-# - rebasing host with remote master ensures a minimal diffset ("superimposing" files are auto-removed if no longer needed)
-# - avoid host branches on central bare repo. GUI development mainly on master files, host branches backup done by host backup
-#
-# TODO
-# - howto easily move a default file from master to specific host branches? authorized_keys?
-# - MASTER ADD
-# - DIABLO ADD
-#   - cruft(2015-03-21 14:27:49,138) ERROR: net-wireless/hostapd-2.3: /etc/hostapd/hostapd.wpa_psk has incorrect MD5sum
-#   - cruft(2015-03-21 14:28:20,970) ERROR: sys-apps/smartmontools-6.3: /etc/smartd.conf has incorrect MD5sum
-#     DEVICESCAN -a -n standby,q -I 194 -W 0,0,40 -m root@localhost -C 197+ -U 198+
-#   - cruft(2015-03-21 14:29:46,330) ERROR: www-servers/apache-2.2.29: /etc/conf.d/apache2 has incorrect MD5sum (REALLY NEEDED???????)
-# - BELIAL ADD
-##############################################
+import functools
+import logging
+import os
+import pylon.base as base
+import pylon.gentoo.job as job
+import pylon.gentoo.ui as ui
 
-repo_path = '/mnt/Dropbox/work/projects/workspace/gentoo-repo'
+repo_path = '/mnt/Dropbox/work/projects/gentoo-repo'
 hosts = [
     'diablo',
     'belial',
     ]
 
-# FIXME think about git tree in projects
 # always chdir to work-tree to avoid long relative paths when using --git-dir + --work-tree and calling this script from arbitrary directory
 git_cmd = 'cd / && git '
 
-import functools
-import os
-import gentoo.job
-import gentoo.ui
-import pylon.base
-
-class ui(gentoo.ui.ui):
+class ui(ui.ui):
     def __init__(self, owner):
         super().__init__(owner)
         self.init_op_parser()
@@ -63,8 +29,43 @@ class ui(gentoo.ui.ui):
         if self.hostname not in hosts:
             raise self.owner.exc_class('unknown host ' + self.hostname)
 
-class adm_config(pylon.base.base):
-    'manage config files across multiple hosts'
+class adm_config(base.base):
+    """
+Manage config files across multiple hosts
+
+HOWTO
+- start always with checked out host branch
+- ADDING TO MASTER: git add and deliver_master will work, but be careful to commit host-specific ADDs to host branch
+- if MD5 sums are equal and file is not needed anymore: checkin any pending changes, git rm in respective working tree,
+- after deliver_master has been executed on one host, use git pull to see changes on other host
+- host MUST NEVER be merged onto master; PREFERABLY operate on master directly, or just cherry-pick from host to master:
+  - commit-based cherry picking from host to master tricky (commits containing host+master files need to be split)
+  git stash && git checkout master
+  git log diablo
+  (git show <commit hashes>)
+  git cherry-pick <commit hashes>
+  git push && git checkout diablo && git rebase && git branch -d master && git stash pop
+- rebasing host with remote master ensures a minimal diffset ("superimposing" files are auto-removed if no longer needed)
+- avoid host branches on central bare repo. GUI development mainly on master files, host branches backup done by host backup
+
+TODO
+
+KEEP JUST FOR HOST/MASTER distinction
+- create master_export
+  - copy master files to local master repo (followed by slow manual commit without changing files on host)
+- create master_import
+  - revert master files (check if identical to local master repo)
+  - import master from github
+
+- howto easily move a default file from master to specific host branches? authorized_keys?
+- MASTER ADD
+- DIABLO ADD
+  - cruft(2015-03-21 14:27:49,138) ERROR: net-wireless/hostapd-2.3: /etc/hostapd/hostapd.wpa_psk has incorrect MD5sum
+  - cruft(2015-03-21 14:28:20,970) ERROR: sys-apps/smartmontools-6.3: /etc/smartd.conf has incorrect MD5sum
+    DEVICESCAN -a -n standby,q -I 194 -W 0,0,40 -m root@localhost -C 197+ -U 198+
+  - cruft(2015-03-21 14:29:46,330) ERROR: www-servers/apache-2.2.29: /etc/conf.d/apache2 has incorrect MD5sum (REALLY NEEDED???????)
+- BELIAL ADD
+"""
 
     def run_core(self):
         getattr(self, self.__class__.__name__ + '_' + self.ui.args.op)()
@@ -90,7 +91,6 @@ class adm_config(pylon.base.base):
     def adm_config_deliver_master(self):
         'sequence for delivering master & rebasing host branch'
         
-        import logging
         verbosity = 'stderr'
         if self.ui.logger.getEffectiveLevel() == logging.DEBUG:
             verbosity = 'both'
@@ -149,9 +149,6 @@ class adm_config(pylon.base.base):
         self.ui.info('Listing master-specific diff:')
         self.dispatch(git_cmd + 'diff origin/master --name-status -- ' + ' '.join(self.master_files()), output='both')
 
-        if self.ui.args.mail:
-            self.adm_config_md5()
-
     def list_repo(self):
         return [''.join(('/',x)) for x in self.dispatch(git_cmd + 'ls-files', output=None).stdout]
 
@@ -170,34 +167,7 @@ class adm_config(pylon.base.base):
         for f in self.master_files():
             print(f)
 
-    def adm_config_md5(self):
-        'check if portage md5 equals git-controlled file => can be removed from git'
-
-        # generate custom portage object/pkg map once
-        import cruft
-        import re
-        objects = {}
-        pkg_map = {}
-        pkg_err = {}
-
-        for pkg in sorted(cruft.vardb.cpv_all()):
-            contents = cruft.vardb._dblink(pkg).getcontents()
-            pkg_map.update(dict.fromkeys(contents.keys(), pkg))
-            objects.update(contents)
-     
-        repo_files = self.list_repo()
-        portage_controlled = set(objects.keys()) & set(repo_files)
-     
-        # openrc installs user version => MD5 sum always equal (look into ebuild)
-        # /etc/conf.d/hostname (sys-apps/openrc-0.11.8)
-        for f in portage_controlled:
-            (n_passed, n_checked, errs) = cruft.contents_checker._run_checks(cruft.vardb._dblink(pkg_map[f]).getcontents())
-            if not [e for e in errs if re.search(f + '.*MD5', e)]:
-                self.ui.warning('=MD5 {0} ({1})'.format(f, pkg_map[f]))
-            else:
-                self.ui.debug('!MD5 {0} ({1})'.format(f, pkg_map[f]))
-        
 if __name__ == '__main__':
-    app = adm_config(job_class=gentoo.job.job,
+    app = adm_config(job_class=job.job,
                       ui_class=ui)
     app.run()
