@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import datetime
 import hashlib
 import os
 import pprint
@@ -37,13 +36,13 @@ manual_tasks = {
     'diablo': (
         ('/mnt/work/projects/backup/cache/diablo',
          '/run/media/schweizer/extpool',
-         'btrfs', '6m4y'),
+         'btrfs', '1h6m4y'), # add hour interval to allow easy manual refresh at any time
         ('/mnt/work/projects/backup/pool/games',
          '/run/media/schweizer/extpool',
-         'btrfs', '6m4y'),
+         'btrfs', '1h6m4y'),
         ('/mnt/work/projects/backup/pool/video',
          '/run/media/schweizer/extpool',
-         'btrfs', '6m4y'),
+         'btrfs', '1h6m4y'),
 
         ('02282962282955C7',
          '/run/media/schweizer/extpool/win7.img',
@@ -83,9 +82,7 @@ class adm_backup(base.base):
         for engine in transfer_engines:
             if not self.ui.args.engine or engine == self.ui.args.engine:
                 setattr(self, engine, getattr(__import__('backup_' + engine), 'backup_' + engine)(owner=self))
-        t1 = datetime.datetime.now()
         getattr(self, self.__class__.__name__ + '_' + self.ui.args.op)()
-        self.ui.info(self.ui.args.op + ' took ' + str(datetime.datetime.now() - t1) + ' to complete...')
 
     def do(self, src_path, dest_path, opts, cmd):
 
@@ -106,6 +103,7 @@ class adm_backup(base.base):
         return ((not self.ui.args.engine or self.ui.args.engine == engine) and
                 (not self.ui.args.src    or self.ui.args.src == src))
             
+    @ui.log_exec_time
     def adm_backup_auto(self):
         'perform host-specific automatic tasks'
         for (src, dest, engine, opts) in auto_tasks[self.ui.hostname]:
@@ -115,6 +113,7 @@ class adm_backup(base.base):
                               blocking=False)
         self.join()
 
+    @ui.log_exec_time
     def adm_backup_manual(self):
         'perform host-specific manual tasks'
         for (src, dest, engine, opts) in manual_tasks[self.ui.hostname]:
@@ -124,6 +123,7 @@ class adm_backup(base.base):
                               blocking=False)
         self.join()
 
+    @ui.log_exec_time
     def adm_backup_info(self):
         'show generic info about tasks'
         tasks = list(auto_tasks[self.ui.hostname])
@@ -132,6 +132,7 @@ class adm_backup(base.base):
             if (self.selected(engine, src)):
                 self.do(src, dest, opts, getattr(self, engine).info)
 
+    @ui.log_exec_time
     def adm_backup_modify(self):
         'modify specified tasks'
         tasks = list(auto_tasks[self.ui.hostname])
@@ -140,6 +141,7 @@ class adm_backup(base.base):
             if (self.selected(engine, src)):
                 self.do(src, dest, opts, getattr(self, engine).modify)
 
+    @ui.log_exec_time
     def adm_backup_list(self):
         'display list of configured backup tasks'
         self.ui.info('Automatic tasks:')
