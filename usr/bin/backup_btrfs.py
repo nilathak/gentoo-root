@@ -21,6 +21,10 @@ NOTES
   it would only make sense for snapshots which show a large "exclusive size" (3rd column in qgroup output), which can be elevated
   for snapshots containing many large transient files (downloads, caches, ...), but it's generally better to decrease
   snapshot retention time in this case
+
+FIXME
+- use ionice -c3 with btrfs send calls (used by btrfs pope)
+- backup: disable ts_within_td delete if num of timedelta class ts >= MAX
 '''
     
 import datetime
@@ -40,8 +44,8 @@ class backup_btrfs(base.base):
 
     __doc__ = sys.modules[__name__].__doc__
     
-    @classmethod
-    def unique_logspace(cls, data_points, interval_range):
+    @staticmethod
+    def unique_logspace(data_points, interval_range):
         exp = [x * math.log(interval_range)/data_points for x in range(0, data_points)]
         logspace = [int(round(math.exp(x))) for x in exp]
         for idx,val in enumerate(logspace):
@@ -54,16 +58,16 @@ class backup_btrfs(base.base):
                 new_val = val
             yield new_val
                 
-    @classmethod
-    def get_ts_of_path(cls, path):
+    @staticmethod
+    def get_ts_of_path(path):
         return datetime.datetime.strptime(re.search(snapshot_regex, path).group(0), snapshot_pattern)
             
-    @classmethod
-    def get_path_of_ts(cls, path, name, ts):
+    @staticmethod
+    def get_path_of_ts(path, name, ts):
         return os.path.join(path, name + '.' + ts.strftime(snapshot_pattern))
     
-    @classmethod
-    def get_ts_now(cls):
+    @staticmethod
+    def get_ts_now():
         return datetime.datetime.today().replace(microsecond=0)
     
     def get_td(self, delta_str):
@@ -205,7 +209,7 @@ class backup_btrfs(base.base):
                 
             self.ui.debug('Checking delta: ' + str(td))
             for ts in ts_recv_list:
-                if (ts_now - td < ts) and (ts_now - td_prev > ts):
+                if (ts_now - td) < ts < (ts_now - td_prev):
                     ts_within_td.append(ts)
 
             # FIXME
@@ -269,8 +273,7 @@ class backup_btrfs(base.base):
                     # rescan timedelta (needed since cloning multiple snapshots leads to ignored snapshots in subsequent timedelta cleanup,
                     # they would be deleted in a run without snapshot taking, but this approach is cleaner)
                     for ts in ts_recv_list:
-                        if ((ts_now - td < ts) and
-                            (ts_now - td_prev > ts) and
+                        if ((ts_now - td) < ts < (ts_now - td_prev) and
                             ts not in ts_within_td):
                             ts_within_td.append(ts)
                     ts_within_td.sort()
