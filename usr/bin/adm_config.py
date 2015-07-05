@@ -19,17 +19,43 @@ HOWTO
 
 TODO
 
-KEEP JUST FOR HOST/MASTER distinction
-- create master_export
-  - copy master files to local master repo (followed by slow manual commit without changing files on host)
-- create master_import
-  - revert master files (check if identical to local master repo)
-  - import master from github
+- search for bugs on gentoo related to ebuild in gentoo-overlay => offer link in a new reply
+
+- NEW deliver_master (
+  - enables quick & dirty emacs development until/or in parallel to eclipse devel
+  - flow (KEEP JUST FOR HOST/MASTER distinction)
+    - checkout gentoo-master
+
+  - dont forget to filter-branch after committing to layman overlay
+
+
+    - create master_export
+      - copy master files to local master repo (followed by slow manual commit without changing files on host)
+    - create master_import
+      - revert master files (check if identical to local master repo)
+      - import master from github
+
+
+- describe how to change history for user matching for hosted cloud repos
+  git checkout <branch to change>
+   
+  git filter-branch -f --env-filter '
+      oldname="layman"
+      oldemail="layman@localhost"
+      newname="Hannes Schweizer"
+      newemail="nilathak@users.noreply.github.com"
+      [ "$GIT_AUTHOR_EMAIL" = "$oldemail" ] && GIT_AUTHOR_EMAIL="$newemail" || true
+      [ "$GIT_COMMITTER_EMAIL" = "$oldemail" ] && GIT_COMMITTER_EMAIL="$newemail" || true
+      [ "$GIT_AUTHOR_NAME" = "$oldname" ] && GIT_AUTHOR_NAME="$newname" || true
+      [ "$GIT_COMMITTER_NAME" = "$oldname" ] && GIT_COMMITTER_NAME="$newname" || true
+      ' HEAD
+  git push -f
+
 
 - howto easily move a default file from master to specific host branches? authorized_keys?
 - MASTER ADD
+  - /root/.gitconfig
 - DIABLO ADD
-  - cruft(2015-03-21 14:27:49,138) ERROR: net-wireless/hostapd-2.3: /etc/hostapd/hostapd.wpa_psk has incorrect MD5sum
   - cruft(2015-03-21 14:28:20,970) ERROR: sys-apps/smartmontools-6.3: /etc/smartd.conf has incorrect MD5sum
     DEVICESCAN -a -n standby,q -I 194 -W 0,0,40 -m root@localhost -C 197+ -U 198+
   - cruft(2015-03-21 14:29:46,330) ERROR: www-servers/apache-2.2.29: /etc/conf.d/apache2 has incorrect MD5sum (REALLY NEEDED???????)
