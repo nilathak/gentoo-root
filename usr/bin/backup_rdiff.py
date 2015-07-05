@@ -200,8 +200,7 @@ class backup_rdiff(base.base):
     def modify(self, src_path, dest_path, opts=''):
         'modify backup destinations according to -o switch'
 
-        cmd = self.ui.args.options.split(',')[0]
-        arg = self.ui.args.options.split(',')[1]
+        cmd,arg,*rest = self.ui.args.options.split(',')
 
         if cmd == 'remove':
             self.ui.info('Removing obsolete diff sets from {0}...'.format(dest_path))
