@@ -1,24 +1,29 @@
 #!/usr/bin/env python3
-import copy
+import collections
 import errno
+import itertools
+import json
 import multiprocessing
 import os
 import pylon.base as base
 import pylon.gentoo.job as job
 import pylon.gentoo.ui as ui
 import re
+import stat
 import time
 
 class ui(ui.ui):
     def __init__(self, owner):
         super().__init__(owner)
-        self.parser_common.add_argument('-o', '--options',
-                                        help='pass custom string to operations')
+        self.parser_common.add_argument('-o', '--options', help='pass custom string to operations')
+        self.parser_common.add_argument('-f', '--force', action='store_true')
+         
         self.init_op_parser()
-        self.parser_kernel.add_argument('-f', '--force', action='store_true')
         self.parser_kernel.add_argument('--no-backup', action='store_true', help='do not overwrite keyring content with backup')
         self.parser_kernel.add_argument('-s', '--small', action='store_true', help='skip rsync of large ISOs')
-        self.parser_wrap.add_argument('-f', '--force', action='store_true')
+         
+        self.parser_sync.add_argument('-t', '--tree', action='store_true')
+        self.parser_update.add_argument('-t', '--tree', action='store_true')
 
     def setup(self):
         super().setup()
@@ -31,6 +36,7 @@ class adm_misc(base.base):
     def run_core(self):
         getattr(self, self.__class__.__name__ + '_' + self.ui.args.op)()
 
+    @ui.log_exec_time
     def adm_misc_kernel(self):
         # ====================================================================
         'scripting stuff to build kernels'
@@ -166,8 +172,8 @@ class adm_misc(base.base):
             '--exclude="/run/"',
             '--exclude="/sys/"',
             '--exclude="/tmp/"',
-            '--exclude="/var/dhcpcd/dhcpcd-wlan0.lease"',
-            '--exclude="/var/lib/ntpd.drift"',
+            '--exclude="/var/lib/dhcpcd/dhcpcd-wlan0-arreat.lease"',
+            '--exclude="/var/lib/openntpd/ntpd.drift"',
             '--exclude="/var/lib/postfix/master.lock"',
             '--exclude="/var/lib/syslog-ng/syslog-ng.persist"',
             '--exclude="/var/log/"', # services will only run on the actual device
@@ -248,6 +254,7 @@ class adm_misc(base.base):
         else:
             self.ui.warning('No other device chroot environment should be open while doing rsync, close them...')
 
+    @ui.log_exec_time
     def adm_misc_check_ssd(self):
         # ====================================================================
         'periodic manual SSD maintenance'
@@ -259,57 +266,81 @@ class adm_misc(base.base):
         for mp in ssd_mount_points[self.ui.hostname]:
             self.dispatch('/sbin/fstrim -v ' + mp)
 
+    @ui.log_exec_time
     def adm_misc_check_btrfs(self):
         # ====================================================================
         'periodic manual btrfs maintenance'
 
-        btrfs_devices = {
+        btrfs_label = {
             'diablo': (
-                '/dev/mapper/cache0',
-                '/dev/mapper/pool0',
+                'cache',
+                'pool',
             ),
             'belial': (
-                '/dev/sda1',
-            ),
-        }
-        btrfs_mountpoint = {
-            'diablo': (
-                '/',
-                '/mnt/games',
-                '/mnt/video',
-            ),
-            'belial': (
-                '/',
+                'belial',
             ),
         }
 
-        # FIXME resume interrupted scrub?
-        for p in btrfs_devices[self.ui.hostname]:
-            self.ui.info('Scrubbing {0}...'.format(p))
-            self.dispatch('/sbin/btrfs scrub start -BR ' + p)
+        for label in btrfs_label[self.ui.hostname]:
+            self.ui.info('Scrubbing {0}...'.format(label))
+            # map label to device
+            device = self.dispatch('/sbin/findfs LABEL={0}'.format(label),
+                                   output=None, passive=True).stdout[0]
+            self.dispatch('/sbin/btrfs scrub start -BR -c 3 ' + device,
+                          blocking=False)
+            
+            # map label to first mountpoint
+            for l in open('/proc/mounts', 'r'):
+                dev,mp,*rest = l.split(' ')
+                if dev == device:
+                    self.ui.info('Balancing metadata + data chunks for {0}...'.format(mp))
+                    self.dispatch('/usr/bin/ionice -c 3 /sbin/btrfs balance start -v -musage=50 -dusage=50 ' + mp,
+                                  blocking=False)
+                    self.dispatch('/sbin/btrfs fi usage ' + mp,
+                                  passive=True)
+                    break
 
-        # FIXME resume interrupted balancing?
-        for p in btrfs_mountpoint[self.ui.hostname]:
-            self.ui.info('Balancing metadata + data chunks for {0}...'.format(p))
-            self.dispatch('/usr/bin/ionice -c 3 /sbin/btrfs balance start -v -musage=50 -dusage=50 ' + p)
-            self.dispatch('/sbin/btrfs fi usage ' + p)
-        
+        self.join()
+            
         # - FIXME perform periodic defrag after "snapshot-aware defragmentation" is available again
-        for p in btrfs_mountpoint[self.ui.hostname]:
-            self.ui.info('Reporting highly defragmented files for {0}...'.format(p))
-            for l in self.dispatch('find {0} -xdev -type f -print0 | sed \'s/\(.*\)/"\\1"/\' | xargs -0 /usr/sbin/filefrag | grep -e " [0-9]\{{3,\}} extent"'.format(p),
-                                   output=None).stdout:
-                self.ui.warning(l)
+        # - FIXME some paths are not escaped correctly
+        btrfs_filefrag_roots = {
+            'diablo': (
+                '/home',
+                # FIXME re-enable after escape nightmare
+                #'/',
+                #'/mnt/games',
+                #'/mnt/video',
+            ),
+            'belial': (
+                '/',
+            ),
+        }
+        extent_pattern = re.compile(' [0-9]{3,} extent')
+        #for r in btrfs_filefrag_roots[self.ui.hostname]:
+        #    for root, dirs, files in os.walk(r, onerror=lambda x: self.ui.error(str(x))):
+        #        for d in list(dirs):
+        #            path = os.path.join(root, d)
+        #            if os.path.ismount(path):
+        #                dirs.remove(d)
+        #        for f in files:
+        #            path = os.path.join(root, f).replace('$','\$')
+        #            try:
+        #                output = self.dispatch('/usr/sbin/filefrag "{0}"'.format(path),
+        #                                       output=None).stdout
+        #                if output:
+        #                    match = extent_pattern.search(output[0])
+        #                    if match:
+        #                        self.ui.warning(match.string)
+        #            except self.exc_class:
+        #                self.ui.error('filefrag failed for {0}'.format(path))
 
     def adm_misc_spindown(self):
         # ====================================================================
         'force large HDD into standby mode'
 
-        luks_uuid = 'ab45cdb1-643b-4b29-8448-f68fa65f574e'
-        mounts = (
-            '/mnt/games',
-            '/mnt/video',
-        )
+        luks_uuid = 'd6464602-14fc-485c-befc-d22ba8e4d533'
+        btrfs_label = 'pool'
 
         frequency_per_hour = 4
         
@@ -318,12 +349,10 @@ class adm_misc(base.base):
 
             self.ui.debug('checking for ongoing IO operations using a practical hysteresis')
             try:
-                device = os.path.basename(self.dispatch('findfs UUID=' + luks_uuid,
-                                                        passive=True,
-                                                        output=None).stdout[0])
+                device = os.path.basename(self.dispatch('/sbin/findfs UUID=' + luks_uuid,
+                                                        output=None, passive=True).stdout[0])
                 io_ops_1st = self.dispatch('cat /proc/diskstats | grep ' + device,
-                                           passive=True,
-                                           output=None).stdout
+                                           output=None, passive=True).stdout[0]
             except self.exc_class:
                 raise self.exc_class("Container HDD not found!")
             
@@ -331,21 +360,123 @@ class adm_misc(base.base):
             time.sleep(60 / frequency_per_hour * 59)
             
             io_ops_2nd = self.dispatch('cat /proc/diskstats | grep ' + device,
-                                       passive=True,
-                                       output=None).stdout
+                                       output=None, passive=True).stdout[0]
 
-            if io_ops_1st[0] == io_ops_2nd[0]:
+            if io_ops_1st == io_ops_2nd:
                 self.ui.debug('Ensure filesystem buffers are flushed')
-                for m in mounts:
-                    self.dispatch('btrfs filesystem sync ' + m,
+
+                btrfs_device = self.dispatch('/sbin/findfs LABEL=' + btrfs_label,
+                                             output=None, passive=True).stdout[0]
+                out = self.dispatch('cat /proc/mounts | grep ' + btrfs_device,
+                                    output=None, passive=True).stdout[0]
+                dev,mp,*rest = out.split(' ')
+                if dev == btrfs_device:
+                    self.dispatch('btrfs filesystem sync ' + mp,
                                   output=None)
+                    
                 self.ui.debug('Spinning down...')
                 self.dispatch('hdparm -y /dev/' + device,
                               output=None)
 
+    def adm_misc_sync(self):
+        # ====================================================================
+        'sync ebuild repositories'
+        self.dispatch('emaint sync -A',
+                      output='stderr')
+        self.dispatch('eix-update',
+                      output='stderr')
+        self.adm_misc_update()
+        
+    def adm_misc_update(self):
+        # ====================================================================
+        'update portage'
+
+        self.ui.info('Checking for updates...')
+        try:
+            self.dispatch('{0} {1} {2}'.format(
+                'emerge --nospinner --autounmask-keep-masks --keep-going --with-bdeps=y -uDNv world',
+                '-p' if not self.ui.args.force else '',
+                '-t' if self.ui.args.tree else ''),
+                          output='nopipes')
+        except self.exc_class:
+            pass
+        
+        self.ui.info('Checking for obsolete dependencies...')
+        self.dispatch('{0} {1}'.format(
+            'emerge --depclean',
+            '-p' if not self.ui.args.force else ''),
+                      output='nopipes')
+
+        if self.ui.args.force:
+            self.ui.info('Rebuilding broken lib dependencies...')
+            self.dispatch('emerge @preserved-rebuild',
+                          output='nopipes')
+
+            self.ui.info('Checking for obsolete distfiles...')
+            self.dispatch('eclean -Cd distfiles -f',
+                          output='nopipes')
+
+    def adm_misc_check_portage(self):
+        # ====================================================================
+        'perform portage maintenance'
+
+        self.ui.info('Checking for potential vulnerabilities...')
+        try:
+            self.dispatch('glsa-check -ntv all')
+        except self.exc_class:
+            pass
+         
+        self.ui.info('Performing useful emaint commands...')
+        try:
+            self.dispatch('emaint -c all')
+        except self.exc_class:
+            pass
+         
+        self.ui.info('Checking for obsolete package.* file entries...')
+        try:
+            self.dispatch('eix-test-obsolete brief')
+        except self.exc_class:
+            pass
+         
+    @ui.log_exec_time
     def adm_misc_check_rights(self):
         # ====================================================================
-        'set access rights on fileserver'
+        'check and apply access rights on system & user data paths'
+
+        def set_rights_dir(dir, owner, group, dirmask):
+            os.chown(dir, owner, group)
+            os.chmod(dir, dirmask)
+
+        def set_rights_file(file, owner, group, filemask):
+            os.chown(file, owner, group)
+            os.chmod(file, filemask)
+
+        def set_rights(tree,
+                       owner=1000,  # schweizer
+                       group=100,   # users
+                       dirmask=0o750,
+                       filemask=0o640):
+            dir_exceptions = (
+                '/mnt/software/linux',
+                '/mnt/work/projects',
+                )
+            file_exceptions = (
+                '/mnt/images/private/hannes',
+                '/mnt/video/private/hannes',
+                )
+            for root, dirs, files in os.walk(tree, onerror=lambda x: self.ui.error(str(x))):
+                for d in list(dirs):
+                    if os.path.join(root, d) in dir_exceptions:
+                        dirs.remove(d)
+                for f in list(files):
+                    if os.path.join(root, f) in file_exceptions:
+                        files.remove(f)
+                if not self.ui.args.dry_run:
+                    for d in dirs:
+                        set_rights_dir(os.path.join(root, d), owner, group, dirmask)
+                    for f in files:
+                        set_rights_file(os.path.join(root, f), owner, group, filemask)
+        
         public = (
             '/mnt/audio',
             '/mnt/docs',
@@ -355,7 +486,7 @@ class adm_misc(base.base):
             )
         self.ui.info('Setting rights for public data...')
         for p in public:
-            self.dispatch(lambda p=p: self.set_rights(p),
+            self.dispatch(lambda p=p: set_rights(p),
                           blocking=False)
         self.join()
 
@@ -365,42 +496,62 @@ class adm_misc(base.base):
             )
         self.ui.info('Setting rights for private data...')
         for p in private:
-            self.dispatch(lambda p=p: self.set_rights(p, dirmask=0o700, filemask=0o600),
+            self.dispatch(lambda p=p: set_rights(p, dirmask=0o700, filemask=0o600),
                           blocking=False)
         self.join()
 
-    def set_rights_dir(self, dir, owner, group, dirmask):
-        os.chown(dir, owner, group)
-        os.chmod(dir, dirmask)
-
-    def set_rights_file(self, file, owner, group, filemask):
-        os.chown(file, owner, group)
-        os.chmod(file, filemask)
-
-    def set_rights(self, tree,
-                   owner=1000,  # schweizer
-                   group=100,  # users
-                   dirmask=0o750,
-                   filemask=0o640):
+        self.ui.info('Checking for inconsistent passwd/group files...')
+        try:
+            self.dispatch('pwck -qr')
+        except self.exc_class:
+            pass
+        try:
+            self.dispatch('grpck -qr')
+        except self.exc_class:
+            pass
+                
+        self.ui.info('Checking for sane system file permissions...')
         dir_exceptions = (
-            '/mnt/software/linux',
-            '/mnt/work/projects',
+            '/home/schweizer/.local',
+            '/mnt',
+            '/usr/portage/distfiles',
+            '/var',
             )
         file_exceptions = (
             )
-        for root, dirs, files in os.walk(tree, onerror=lambda x: self.ui.error(str(x))):
-            for d in copy.copy(dirs):
-                if os.path.join(root, d) in dir_exceptions:
+        for root, dirs, files in os.walk('/', onerror=lambda x: self.ui.error(str(x))):
+            for d in list(dirs):
+                path = os.path.join(root, d)
+                if (path in dir_exceptions or
+                    os.path.ismount(path)):
                     dirs.remove(d)
-            for f in copy.copy(files):
+            for f in list(files):
                 if os.path.join(root, f) in file_exceptions:
                     files.remove(f)
-            if not self.ui.args.dry_run:
-                for d in dirs:
-                    self.set_rights_dir(os.path.join(root, d), owner, group, dirmask)
-                for f in files:
-                    self.set_rights_file(os.path.join(root, f), owner, group, filemask)
 
+            for d in dirs:
+                dir = os.path.join(root, d)
+                if (os.stat(dir).st_mode & stat.S_IWGRP or
+                    os.stat(dir).st_mode & stat.S_IWOTH):
+                    self.ui.warning('Found world/group writeable dir: ' + dir)
+
+            for f in files:
+                try:
+                    file = os.path.join(root, f)
+                    if (os.stat(file).st_mode & stat.S_IWGRP or
+                        os.stat(file).st_mode & stat.S_IWOTH):
+                        self.ui.warning('Found world/group writeable file: ' + file)
+
+                    if (os.stat(file).st_mode & stat.S_ISGID or
+                        os.stat(file).st_mode & stat.S_ISUID):
+                        if (os.stat(file).st_nlink > 1):
+                            # someone may try to retain older versions of binaries, eg avoiding security fixes
+                            self.ui.warning('Found suid/sgid file with multiple links: ' + file)
+                except Exception as e:
+                    # dead links are reported by cruft anyway
+                    pass
+                        
+    @ui.log_exec_time
     def media_pdf(self):
         # ====================================================================
         'embed OCR text in scanned PDF file'
@@ -437,6 +588,7 @@ class adm_misc(base.base):
         #    # embed media text into pdf file
         #
 
+    @ui.log_exec_time
     def adm_misc_check_audio(self):
         # ====================================================================
         'check audio metadata (low bitrates, ...)'
@@ -444,41 +596,59 @@ class adm_misc(base.base):
         if not walk:
             walk = '/mnt/audio'
 
-        # FIXME ignore single low bitrate if other songs in album are
-        # okay, or simply ignore low bitrate VBR files
-
-        lossy_extensions = re.compile(r'\.mp3$|\.ogg$', re.IGNORECASE)
-
         dir_exceptions = (
             '/mnt/audio/0_sort',
+            '/mnt/audio/ringtones'
             )
         file_exceptions = (
-            )
+            '/mnt/audio/.stfolder',
+            '/mnt/audio/.stignore',
+        )
+
+        media_files = list()
         for root, dirs, files in os.walk(walk, onerror=lambda x: self.ui.error(str(x))):
-            for d in copy.copy(dirs):
+            for d in list(dirs):
                 if os.path.join(root, d) in dir_exceptions:
                     dirs.remove(d)
-            for f in copy.copy(files):
+            for f in list(files):
                 if os.path.join(root, f) in file_exceptions:
                     files.remove(f)
-            for f in files:
-                name = os.path.join(root, f)
-                if lossy_extensions.search(name):
-                    out = self.dispatch('exiftool "{0}" | grep -ai "Audio Bitrate\\|Nominal Bitrate"'.format(name),
-                                        output=None).stdout[0]
-                    # ignore unit specification
-                    try:
-                        bitrate = float(out.split()[-2])
-                        if bitrate < 130:
-                            self.ui.warning('Low audio bitrate detected: {1} ({0:-6f})'.format(bitrate, name))
-                    except Exception:
-                        self.ui.error('Bitrate extraction failed for: {0}'.format(name))
+            media_files.extend(map(lambda x: os.path.join(root, x), files))
+            if not dirs:
+                if 'cover.jpg' not in files:
+                    self.ui.warning('No album cover detected: {0}'.format(root))
 
+        # process file list in chunks to avoid: Argument list is too long
+        chunk_size = 1000
+        for chunk in [media_files[x:x+chunk_size] for x in range(0, len(media_files), chunk_size)]:
+            out = self.dispatch('exiftool -j "{0}"'.format('" "'.join(chunk)),
+                                output=None).stdout
+            for file_dict in json.loads(os.linesep.join(out)):
+                filetype = file_dict['FileType']
+                file     = file_dict['SourceFile']
+                
+                if filetype == 'MP3' or filetype == 'OGG':
+                    try:
+                        bitrate = file_dict['AudioBitrate']
+                    except KeyError:
+                        bitrate = file_dict['NominalBitrate']
+                    # ignore unit specification
+                    bitrate = float(bitrate.split()[-2])
+                    if bitrate < 130:
+                        self.ui.warning('Low audio bitrate detected: {1} ({0:-6f})'.format(bitrate, file))
+
+                elif filetype == 'JPEG':
+                    x,y = file_dict['ImageSize'].split('x')
+                    if int(x) < 300 or int(y) < 300:
+                        self.ui.warning('Low resolution (< 300x300) cover detected: {0}'.format(file))
+
+    @ui.log_exec_time
     def adm_misc_check_images(self):
         # ====================================================================
         'check image metadata (silently convert to xmp)'
 
         # FIXME
+        # - delete geotagging metadata? identify incriminating XMP metadata and remove?
         self.ui.warning('DISABLED until properly implemented!')
         return
 
@@ -512,7 +682,7 @@ class adm_misc(base.base):
             '/mnt/images/private',
             )
         for root, dirs, files in os.walk(walk, onerror=lambda x: self.ui.error(str(x))):
-            for d in copy.copy(dirs):
+            for d in list(dirs):
                 if os.path.join(root, d) in dir_exceptions:
                     dirs.remove(d)
             for d in dirs:
@@ -536,7 +706,7 @@ class adm_misc(base.base):
         # FIXME do I still need this command?
         # exiftool -r -P '-FileName<ModifyDate' -d %Y-%m-%d_%H-%M-%S%%-c.%%e <file>
 
-
+    @ui.log_exec_time
     def adm_misc_check_work(self):
         # ====================================================================
         'check data consistency on work'
@@ -553,10 +723,10 @@ class adm_misc(base.base):
         file_exceptions = (
             )
         for root, dirs, files in os.walk(walk, onerror=lambda x: self.ui.error(str(x))):
-            for d in copy.copy(dirs):
+            for d in list(dirs):
                 if os.path.join(root, d) in dir_exceptions:
                     dirs.remove(d)
-            for f in copy.copy(files):
+            for f in list(files):
                 if os.path.join(root, f) in file_exceptions:
                     files.remove(f)
             for f in files:
@@ -566,17 +736,38 @@ class adm_misc(base.base):
                     sidecar_pdf_wo_extension_expected.search(f) and not sidecar_wo_extension in files):
                     self.ui.warning('Sidecar PDF expected for: ' + os.path.join(root, f))
 
+    @ui.log_exec_time
     def adm_misc_check_filetypes(self):
         # ====================================================================
         'check for expected/unexpected filetypes on fileserver'
+
         allowed = {
-            'audio': re.compile(r'\.flac$|\.mp3$|\.ogg$|cover\.jpg$', re.IGNORECASE),
-            'images': re.compile(r'\.gif$|\.jpg$|\.png$', re.IGNORECASE),
-            'video': re.compile(r'\.avi$|\.bup$|\.flv$|\.ifo$|\.img$|\.iso$|\.jpg$|\.m2ts$|\.mkv$|\.mp4$|\.mpg$|\.nfo$|\.ogm$|\.srt$|\.sub$|\.vob$', re.IGNORECASE),
+            'audio': re.compile(r'\.flac$|\.mp3$|\.ogg$|cover\.jpg$'),
+            'docs': re.compile(r'\.jpg$|\.opf$|\.pdf$'),
+            'images': re.compile(r'\.' + r'$|\.'.join([
+                # uncompressed
+                'gif','png',
+                # compressed
+                'jpg',
+                # camera videos
+                'avi',
+            ]) + '$', re.IGNORECASE),
+            'video': re.compile(r'\.' + r'$|\.'.join([
+                # metadata
+                'jpg','nfo',
+                # subtitles
+                'idx','srt','sub',
+                # bluray/dvd files
+                'bup','ifo','img','iso','m2ts','vob',
+                # video container
+                'avi','flv','mkv','mp4','mpg','ogm',
+            ]) + '$', re.IGNORECASE),
             }
+        forbidden = re.compile(r'sync-conflict', re.IGNORECASE)
         for k in allowed.keys():
             dir_exceptions = (
                 '/mnt/audio/0_sort',
+                '/mnt/docs/0_sort',
                 '/mnt/images/0_sort',
                 '/mnt/video/0_sort',
                 '/mnt/work/projects/backup',
@@ -584,52 +775,65 @@ class adm_misc(base.base):
             file_exceptions = (
                 )
             for root, dirs, files in os.walk(os.path.join('/mnt', k), onerror=lambda x: self.ui.error(str(x))):
-                for d in copy.copy(dirs):
+                for d in list(dirs):
                     if os.path.join(root, d) in dir_exceptions:
                         dirs.remove(d)
-                for f in copy.copy(files):
+                for f in list(files):
                     if os.path.join(root, f) in file_exceptions:
                         files.remove(f)
                 for f in files:
                     name = os.path.join(root, f)
-                    if not allowed[k].search(name):
+                    if (not allowed[k].search(name) or
+                        forbidden.search(name)):
                         self.ui.warning('Unexpected filetype detected: ' + name)
 
+    @ui.log_exec_time
     def adm_misc_check_filenames(self):
         # ====================================================================
         'check for names incompatible with other filesystems'
         walk = self.ui.args.options
         if not walk:
             walk = '/mnt'
-        ntfs_exceptions = re.compile(r'\0|\\|:|\*|\?|"|<|>|\|')
+
+        # os & os.path & pathlib DO NOT provide anything to check NT path validity
+        # custom implementation inspired from
+        # - https://stackoverflow.com/questions/62771/how-do-i-check-if-a-given-string-is-a-legal-valid-file-name-under-windows
+        # - https://github.com/markwingerd/checkdir/blob/master/checkdir.py
+        #   * < > : " / \ | ? *
+        #   * Characters whose integer representations are 0-31 (less than ASCII space)
+        #   * Any other character that the target file system does not allow (say, trailing periods or spaces)
+        #   * Any of the DOS names: CON, PRN, AUX, NUL, COM1, COM2, COM3, COM4, COM5, COM6, COM7, COM8, COM9, LPT1, LPT2, LPT3, LPT4, LPT5, LPT6, LPT7, LPT8, LPT9 (and avoid AUX.txt, etc)
+        #   * The file name is all periods
+        #   * File paths (including the file name) may not have more than 260 characters (that don't use the \?\ prefix)
+        #   * Unicode file paths (including the file name) with more than 32,000 characters when using \?\ (note that prefix may expand directory components and cause it to overflow the 32,000 limit)
+        ntfs_invalid_names = re.compile(r'^(PRN|AUX|NUL|CON|COM[1-9]|LPT[1-9])(\..*)?$')
+        ntfs_invalid_chars = re.compile(r'[\"*:<>?/|]')
+        # . as first character can be valid, see https://stackoverflow.com/questions/10744305/how-to-create-gitignore-file
+        ntfs_invalid_trailing_chars = re.compile(r'\.$|^\ |\ $')
+            
         dir_exceptions = (
-            '/mnt/audio/0_sort',
-            '/mnt/docs/0_sort',
-            '/mnt/games/0_sort',
-            '/mnt/images/0_sort',
-            '/mnt/video/0_sort',
-            '/mnt/work/0_sort',
             '/mnt/work/projects/backup',
             )
         file_exceptions = (
             )
         for root, dirs, files in os.walk(walk, onerror=lambda x: self.ui.error(str(x))):
-            for d in copy.copy(dirs):
+            for d in list(dirs):
                 if os.path.join(root, d) in dir_exceptions:
                     dirs.remove(d)
-            for f in copy.copy(files):
+            for f in list(files):
                 if os.path.join(root, f) in file_exceptions:
                     files.remove(f)
-            names = copy.copy(dirs)
+            names = list(dirs)
             names.extend(files)
-            names_lower = [x.lower() for x in names]
-            lower_dict = dict.fromkeys(names_lower, 0)
-            for name in names_lower:
-                lower_dict[name] += 1
-            for name in names:
-                if ntfs_exceptions.search(name):
+            lower_case_dupe_map = collections.Counter([x.lower() for x in names])
+            for name in sorted(names):
+                if (ntfs_invalid_names.search(name) or
+                    ntfs_invalid_chars.search(name) or
+                    ntfs_invalid_trailing_chars.search(name) or
+                    len(name) > 255 or
+                    list(filter(lambda c: ord(c) < 32, name))):
                     self.ui.warning('NTFS incompatible filesystem object: ' + os.path.join(root, name))
-                if lower_dict[name.lower()] > 1:
+                if lower_case_dupe_map[name.lower()] > 1:
                     self.ui.warning('Filesystem objects only distinguished by case: ' + os.path.join(root, name))
 
 if __name__ == '__main__':
