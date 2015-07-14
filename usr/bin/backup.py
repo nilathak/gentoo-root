@@ -74,7 +74,7 @@ class ui(ui.ui):
         if self.args.engine and self.args.engine not in transfer_engines:
             raise self.owner.exc_class('unknown backup engine ' + self.args.engine)
         
-class adm_backup(base.base):
+class backup(base.base):
     'container script for all backup related admin tasks'
 
     def run_core(self):
@@ -104,7 +104,7 @@ class adm_backup(base.base):
                 (not self.ui.args.src    or self.ui.args.src == src))
             
     @ui.log_exec_time
-    def adm_backup_auto(self):
+    def backup_auto(self):
         'perform host-specific automatic tasks'
         for (src, dest, engine, opts) in auto_tasks[self.ui.hostname]:
             if (self.selected(engine, src)):
@@ -114,7 +114,7 @@ class adm_backup(base.base):
         self.join()
 
     @ui.log_exec_time
-    def adm_backup_manual(self):
+    def backup_manual(self):
         'perform host-specific manual tasks'
         for (src, dest, engine, opts) in manual_tasks[self.ui.hostname]:
             if (self.selected(engine, src)):
@@ -124,7 +124,7 @@ class adm_backup(base.base):
         self.join()
 
     @ui.log_exec_time
-    def adm_backup_info(self):
+    def backup_info(self):
         'show generic info about tasks'
         tasks = list(auto_tasks[self.ui.hostname])
         tasks.extend(manual_tasks[self.ui.hostname])
@@ -133,7 +133,7 @@ class adm_backup(base.base):
                 self.do(src, dest, opts, getattr(self, engine).info)
 
     @ui.log_exec_time
-    def adm_backup_modify(self):
+    def backup_modify(self):
         'modify specified tasks'
         tasks = list(auto_tasks[self.ui.hostname])
         tasks.extend(manual_tasks[self.ui.hostname])
@@ -142,7 +142,7 @@ class adm_backup(base.base):
                 self.do(src, dest, opts, getattr(self, engine).modify)
 
     @ui.log_exec_time
-    def adm_backup_list(self):
+    def backup_list(self):
         'display list of configured backup tasks'
         self.ui.info('Automatic tasks:')
         pprint.pprint(auto_tasks)
@@ -150,6 +150,6 @@ class adm_backup(base.base):
         pprint.pprint(manual_tasks)
 
 if __name__ == '__main__':
-    app = adm_backup(job_class=job.job,
-                     ui_class=ui)
+    app = backup(job_class=job.job,
+                 ui_class=ui)
     app.run()
