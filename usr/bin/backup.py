@@ -16,31 +16,30 @@ transfer_engines = (
 
 auto_tasks = {
     'diablo': (
-        ('/mnt/work/projects/backup/cache/diablo',
-         '/mnt/work/projects/backup/cache',
+        ('/mnt/work/backup/cache/diablo',
+         '/mnt/work/backup/cache',
          'btrfs', '10h10d'),
-         
-        ('/mnt/work/projects/backup/cache/diablo',
-         '/mnt/work/projects/backup/pool',
-         'btrfs', '2d1m'),
-        ('/mnt/work/projects/backup/pool/games',
-         '/mnt/work/projects/backup/pool',
-         'btrfs', '2d1m'),
-        ('/mnt/work/projects/backup/pool/video',
-         '/mnt/work/projects/backup/pool',
-         'btrfs', '2d1m'),
+        ('/mnt/work/backup/cache/diablo',
+         '/mnt/work/backup/pool',
+         'btrfs', '2d2m'),
+        ('/mnt/work/backup/pool/games',
+         '/mnt/work/backup/pool',
+         'btrfs', '2d2m'),
+        ('/mnt/work/backup/pool/video',
+         '/mnt/work/backup/pool',
+         'btrfs', '2d2m'),
     ),
 }
 
 manual_tasks = {
     'diablo': (
-        ('/mnt/work/projects/backup/cache/diablo',
+        ('/mnt/work/backup/cache/diablo',
          '/run/media/schweizer/extpool',
          'btrfs', '1h6m4y'), # add hour interval to allow easy manual refresh at any time
-        ('/mnt/work/projects/backup/pool/games',
+        ('/mnt/work/backup/pool/games',
          '/run/media/schweizer/extpool',
          'btrfs', '1h6m4y'),
-        ('/mnt/work/projects/backup/pool/video',
+        ('/mnt/work/backup/pool/video',
          '/run/media/schweizer/extpool',
          'btrfs', '1h6m4y'),
 
