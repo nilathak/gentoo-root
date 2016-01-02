@@ -55,3 +55,7 @@ polkitd:x:992:
 dnsmasq:x:991:
 input:x:990:
 crontab:x:989:
+sddm:x:996:
+dhcp:x:993:
+uucp:x:14:uucp
+ldap:x:439:
