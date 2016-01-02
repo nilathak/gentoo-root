@@ -46,21 +46,21 @@ class admin(base.base):
             walk = '/mnt/audio'
 
         dir_exceptions = (
-            '/mnt/audio/0_sort',
-            '/mnt/audio/ringtones'
+            '0_sort',
+            'ringtones'
             )
         file_exceptions = (
-            '/mnt/audio/.stfolder',
-            '/mnt/audio/.stignore',
+            '.stfolder',
+            '.stignore',
         )
 
         media_files = list()
         for root, dirs, files in os.walk(walk, onerror=lambda x: self.ui.error(str(x))):
             for d in list(dirs):
-                if os.path.join(root, d) in dir_exceptions:
+                if list(filter(lambda x: re.search(x, os.path.join(root, d)), dir_exceptions)):
                     dirs.remove(d)
             for f in list(files):
-                if os.path.join(root, f) in file_exceptions:
+                if list(filter(lambda x: re.search(x, os.path.join(root, f)), file_exceptions)):
                     files.remove(f)
             media_files.extend(map(lambda x: os.path.join(root, x), files))
             if not dirs:
@@ -88,8 +88,8 @@ class admin(base.base):
 
                 elif filetype == 'JPEG':
                     x,y = file_dict['ImageSize'].split('x')
-                    if int(x) < 300 or int(y) < 300:
-                        self.ui.warning('Low resolution (< 300x300) cover detected: {0}'.format(file))
+                    if int(x) < 350 or int(y) < 350:
+                        self.ui.warning('Low resolution (< 350x350) cover detected: {0}'.format(file))
 
     @ui.log_exec_time
     def admin_check_btrfs(self):
@@ -99,37 +99,44 @@ class admin(base.base):
         btrfs_label = {
             'diablo': (
                 'cache',
+                'extpool',
                 'pool',
             ),
             'belial': (
                 'belial',
             ),
         }
-        btrfs_mp = list()
-        
+        btrfs_mp_map = dict()
+
         for label in btrfs_label[self.ui.hostname]:
-            self.ui.info('Scrubbing {0}...'.format(label))
-            # map label to device
-            device = self.dispatch('/sbin/findfs LABEL={0}'.format(label),
-                                   output=None, passive=True).stdout[0]
-            self.dispatch('/sbin/btrfs scrub start -BR -c 3 ' + device,
-                          blocking=False)
+            if not self.ui.args.options or label in self.ui.args.options.split(','):
+                # map label to device
+                device = self.dispatch('/sbin/findfs LABEL={0}'.format(label),
+                                       output=None, passive=True).stdout[0]
             
-            # map label to first mountpoint
-            out = self.dispatch('cat /proc/mounts | grep ' + device,
-                                output=None, passive=True).stdout[0]
-            dev,mp,*rest = out.split(' ')
-            if dev == device:
-                self.ui.info('Balancing metadata + data chunks for {0}...'.format(mp))
-                self.dispatch('/usr/bin/ionice -c 3 /sbin/btrfs balance start -v -musage=50 -dusage=50 ' + mp,
-                              blocking=False)
-                btrfs_mp.append(mp)
-                
-        self.join()
-        for mp in btrfs_mp:
+                # map device to first mountpoint
+                out = self.dispatch('cat /proc/mounts | grep ' + device,
+                                    output=None, passive=True).stdout[0]
+                dev,mp,*rest = out.split(' ')
+
+                btrfs_mp_map[label] = mp;
+
+        def job(label, mp):
+            self.ui.info('Scrubbing {0}...'.format(label))
+            self.dispatch('/sbin/btrfs scrub start -BR -c 3 ' + mp)
+            
+            self.ui.info('Balancing metadata + data chunks for {0}...'.format(label))
+            self.dispatch('/sbin/btrfs balance start -v -musage=50 -dusage=50 ' + mp)
+            
+            self.ui.info('Final usage stats for {0}...'.format(label))
             self.dispatch('/sbin/btrfs fi usage ' + mp,
                           passive=True)
             
+        for label,mp in btrfs_mp_map.items():
+            self.dispatch(lambda label=label,mp=mp: job(label,mp),
+                          blocking=False)
+        self.join()
+
         # - FIXME perform periodic defrag after "snapshot-aware defragmentation" is available again
         # - FIXME some paths are not escaped correctly
         btrfs_filefrag_roots = {
@@ -163,6 +170,85 @@ class admin(base.base):
         #                self.ui.error('filefrag failed for {0}'.format(path))
 
     @ui.log_exec_time
+    def admin_check_docs(self):
+        # ====================================================================
+        'check data consistency on docs'
+
+        # FIXME - check for invalid files in 0_blacklist folder (maybe just allow /mnt/docs/0_sort in check_filetypes)
+
+        # FIXME ensure Octave compatibility:
+        # find /mnt/docs/0_sort/ -type f | grep '.*\.m$'
+        # /mnt/docs/0_archive/WaveProcessor/matlab-sim/*
+        # /mnt/docs/0_archive/fpcore/units/fpcoreblks/source/matlab/fpcoreblks/fpcoreblks/slblocks.m
+        # /mnt/docs/systems/communication/hsse00_nat_exercises
+        # /mnt/docs/systems/dsp/fir iir/example_for_iir_analysis.m
+        # /mnt/docs/systems/control/hsse00_ret_exercises
+        # /mnt/docs/systems/dsp/hsse00_set5_exercises
+        # /mnt/docs/systems/dsp/hsse00_syt4_exercises
+        # /mnt/docs/systems/dsp/hsse01_syt4_exercises
+        # /mnt/docs/systems/dsp/noiseshaping
+        # ??? mnt/docs/systems/modeling/matlab/MSystem
+        # ??? mnt/docs/systems/modeling/matlab/mdt
+        
+        
+        walk = self.ui.args.options
+        if not walk:
+            walk = '/mnt/docs'
+        sidecar_pdf_expected = re.compile(r'\.doc$|\.nb$|\.ppt$|\.vsd$|\.xls$', re.IGNORECASE)
+        sidecar_pdf_wo_extension_expected = re.compile(r'exercise.*\.tex$', re.IGNORECASE)
+        dir_exceptions = (
+            '/mnt/docs/education/thesis/competition',
+            )
+        file_exceptions = (
+            )
+        for root, dirs, files in os.walk(walk, onerror=lambda x: self.ui.error(str(x))):
+            for d in list(dirs):
+                if os.path.join(root, d) in dir_exceptions:
+                    dirs.remove(d)
+            for f in list(files):
+                if os.path.join(root, f) in file_exceptions:
+                    files.remove(f)
+            for f in files:
+                sidecar = f + '.pdf'
+                sidecar_wo_extension = os.path.splitext(f)[0] + '.pdf'
+                if (sidecar_pdf_expected.search(f) and not sidecar in files or
+                    sidecar_pdf_wo_extension_expected.search(f) and not sidecar_wo_extension in files):
+                    self.ui.warning('Sidecar PDF expected for: ' + os.path.join(root, f))
+        #'embed OCR text in scanned PDF file'
+        #
+        #if not opts:
+        #    raise self.exc_class('give a pdf filename via -o switch')
+        #pdf_file = opts
+        #pdf_base = os.path.splitext(pdf_file)[0]
+        #
+        #self.ui.ext_info('Extracting pages from scanned PDF...')
+        #self.dispatch('pdfimages {0} {1}'.format(pdf_file, pdf_base),
+        #              output='stderr')
+        #
+        ## determine list of extracted image files
+        ## FIXME check if extracted images are in A4 format (pdfimages does not care if a pdf was scanned or not, this may lead to extracted logo images and such stuff)
+        ## FIXME convert to TIF file directly using the -tiff switch of pdfimages
+        #images = glob.iglob('{0}-[0-9]*.ppm'.format(pdf_base))
+        #
+        #for image in images:
+        #    ppm_base = os.path.splitext(image)[0]
+        #    tif_file = ppm_base + '.tif'
+        #
+        #    self.ui.ext_info('Apply threshold to {0}...'.format(ppm_base))
+        #    # FIXME find optimal threshold value for OCR (test with
+        #    # multiple pdfs)
+        #    # FIXME what is this threshold value? color space?
+        #    self.dispatch('convert {0} -threshold 50000 {1}'.format(image, tif_file),
+        #                  output='stderr')
+        #
+        #    self.dispatch('TESSDATA_PREFIX=/usr/share/ tesseract {0} {1} -l deu'.format(tif_file, ppm_base),
+        #                  output='stderr')
+        #
+        #    # FIXME
+        #    # embed media text into pdf file
+        #
+
+    @ui.log_exec_time
     def admin_check_filenames(self):
         # ====================================================================
         'check for names incompatible with other filesystems'
@@ -187,16 +273,16 @@ class admin(base.base):
         ntfs_invalid_trailing_chars = re.compile(r'\.$|^\ |\ $')
             
         dir_exceptions = (
-            '/mnt/work/projects/backup',
+            '/mnt/work/backup',
             )
         file_exceptions = (
             )
         for root, dirs, files in os.walk(walk, onerror=lambda x: self.ui.error(str(x))):
             for d in list(dirs):
-                if os.path.join(root, d) in dir_exceptions:
+                if list(filter(lambda x: re.search(x, os.path.join(root, d)), dir_exceptions)):
                     dirs.remove(d)
             for f in list(files):
-                if os.path.join(root, f) in file_exceptions:
+                if list(filter(lambda x: re.search(x, os.path.join(root, f)), file_exceptions)):
                     files.remove(f)
             names = list(dirs)
             names.extend(files)
@@ -216,22 +302,27 @@ class admin(base.base):
         # ====================================================================
         'check for expected/unexpected filetypes on fileserver'
 
+        # match nothing for now
+        allowed_global = re.compile('a^')
         allowed = {
-            'audio': re.compile(r'\.flac$|\.mp3$|\.ogg$|cover\.jpg$'),
-            'docs': re.compile(r'\.jpg$|\.opf$|\.pdf$'),
-            # FIXME rename *.JPG to .jpg to see files also with restrictive filter dialogs
-            'images': re.compile(r'\.' + r'$|\.'.join([
+            'audio': re.compile('\.flac$|\.mp3$|\.ogg$|cover\.jpg$'),
+            # FIXME remove 0_sort after major filetype cleanup
+            'docs': re.compile('\.epub$|\.jpg$|\.opf$|\.pdf$|\.tex$|/0_sort/.*'),
+            # FIXME check for any files in games 0_blacklist folder
+            'games': re.compile('.*'),
+            # FIXME
+            # - rename *.JPG to .jpg to see files also with restrictive filter dialogs
+            # - remove 0_sort after major filetype cleanup
+            'images': re.compile('\.' + '$|\.'.join([
                 # uncompressed
                 'gif','png',
                 # compressed
                 'jpg',
                 # camera videos
                 'avi',
-            ]) + '$', re.IGNORECASE),
-            # FIXME check for any files in games 0_blacklist folder
-            # 'games': re.compile(r'^$'),
-            # FIXME check for any (large?) files in video 0_blacklist folder
-            'video': re.compile(r'\.' + r'$|\.'.join([
+            ]) + '$' + '|/0_sort/.*', re.IGNORECASE),
+            # FIXME check for any files in video 0_blacklist folder
+            'video': re.compile('\.' + '$|\.'.join([
                 # metadata
                 'jpg','nfo',
                 # subtitles
@@ -241,27 +332,53 @@ class admin(base.base):
                 # video container
                 'avi','flv','mkv','mp4','mpg','ogm',
             ]) + '$', re.IGNORECASE),
+            'work': re.compile('.*'),
             }
-        # FIXME search all folder (including software) for syncthings tmp files: ~Past.pst.tmp
-        forbidden = re.compile(r'sync-conflict', re.IGNORECASE)
+
+        # FIXME search all folder for syncthings tmp files: ~Past.pst.tmp
+        forbidden_global = re.compile('sync-conflict|/~[^~]*\.tmp$', re.IGNORECASE)
+        forbidden = {
+            'audio': re.compile('a^'),
+            'docs': re.compile('a^'),
+            'games': re.compile('a^'),
+            'images': re.compile('a^'),
+            'video': re.compile('a^'),
+            'work': re.compile('a^'),
+            }
+        
+        dir_exceptions = (
+            '/mnt/work/backup',
+            '/mnt/docs/education/thesis/competition/', #FIXME
+            )
+        file_exceptions = (
+            '/mnt/audio/comedy/.stfolder',
+            '/mnt/audio/downtempo/.stfolder',
+            '/mnt/audio/electronic/.stfolder',
+            '/mnt/audio/metal/.stfolder',
+            '/mnt/audio/ringtones/.stfolder',
+            '/mnt/docs/.stfolder',
+            '/mnt/docs/.stignore',
+            '/mnt/images/.stfolder',
+            '/mnt/images/.stignore',
+            '/mnt/images/0_sort/company/.stfolder',
+            '/mnt/images/0_sort/hannes/.stfolder',
+            '/mnt/work/backup/outlook/.stfolder',
+            '/mnt/work/backup/titanium.hannes/.stfolder',
+        )
         for k in allowed.keys():
-            dir_exceptions = (
-                '/mnt/docs/0_sort',
-                '/mnt/images/0_sort',
-                )
-            file_exceptions = (
-                )
             for root, dirs, files in os.walk(os.path.join('/mnt', k), onerror=lambda x: self.ui.error(str(x))):
                 for d in list(dirs):
-                    if os.path.join(root, d) in dir_exceptions:
+                    if list(filter(lambda x: re.search(x, os.path.join(root, d)), dir_exceptions)):
                         dirs.remove(d)
                 for f in list(files):
-                    if os.path.join(root, f) in file_exceptions:
+                    if list(filter(lambda x: re.search(x, os.path.join(root, f)), file_exceptions)):
                         files.remove(f)
                 for f in files:
                     name = os.path.join(root, f)
-                    if (not allowed[k].search(name) or
-                        forbidden.search(name)):
+                    if ((not allowed_global.search(name) and
+                         not allowed[k].search(name)) or
+                        forbidden_global.search(name) or
+                        forbidden[k].search(name)):
                         self.ui.warning('Unexpected filetype detected: ' + name)
                         
     @ui.log_exec_time
@@ -275,6 +392,7 @@ class admin(base.base):
         # - exiftool file renaming
         #   - do I still need this command?: exiftool -r -P '-FileName<ModifyDate' -d %Y-%m-%d_%H-%M-%S%%-c.%%e <file>
         #   - report wrong file name format?
+        #   - usecase for automatic renaming flow: /mnt/images/pets/stanz/IMG_0006.JPG
         # - rotation
         #   - automatic rotation by exiftool? rotated in other tools, eg pets_stanz_2010-09-24_15-43-59.JPG
         #   - report wrong rotation in xmp metadata
@@ -507,18 +625,18 @@ class admin(base.base):
         ### adm_misc(2014-03-05 00:12:58,895) WARNING: Missing CreateDate tag for: /mnt/images/pets/stanz/stanz_2004-02-14_015.jpg
         ### adm_misc(2014-03-05 00:13:22,249) WARNING: Missing CreateDate tag for: /mnt/images/pets/stanz/stanz_2004-02-14_003.jpg
         ### adm_misc(2014-03-05 00:13:48,517) WARNING: Missing CreateDate tag for: /mnt/images/pets/stanz/stanz_2004-12-26_010.jpg
-        ### adm_misc(2014-03-05 00:13:57,345) WARNING: Missing CreateDate tag for: /mnt/images/pets/stanz/stanz_2004-01-24_005.jpg        
-        self.ui.warning('DISABLED until properly implemented!')
-        return
+        ### adm_misc(2014-03-05 00:13:57,345) WARNING: Missing CreateDate tag for: /mnt/images/pets/stanz/stanz_2004-01-24_005.jpg
+        #self.ui.warning('DISABLED until properly implemented!')
+        #return
 
         walk = self.ui.args.options
         if not walk:
             walk = '/mnt/images'
-
+            
         # - convert existing metadata to xmp, while deleting all
         #   metadata which cannot be converted to xmp.
         # - repair broken metadata structures
-        self.dispatch('exiftool -q -r -P -overwrite_original -all= "-all>xmp:all" "{0}"'.format(walk))
+        #self.dispatch('exiftool -q -r -P -overwrite_original -all= "-all>xmp:all" "{0}"'.format(walk))
 
         # - renaming for scanned images:
         #   rename files according to creationdate -> even ok for
@@ -533,26 +651,53 @@ class admin(base.base):
         #   - if there are pics without a createdate:
         #     exiftool -r -P -overwrite_original '-FileModifyDate>xmp:CreateDate' <file>
         dir_exceptions = (
+            '/mnt/images/[a-s]',
+            '/mnt/images/[u-z]',
             '/mnt/images/0_sort',
-            '/mnt/images/cartoons',
-            '/mnt/images/cuteness',
-            '/mnt/images/design',
-            '/mnt/images/fun',
-            '/mnt/images/private',
-            )
+            #'/mnt/images/cuteness',
+            #'/mnt/images/design',
+            #'/mnt/images/fun',
+        )
+        file_exceptions = (
+            '.stfolder',
+            '.stignore',
+        )
+        def chunks(l, n):
+            for i in xrange(0, len(l), n):
+                yield l[i:i+n]
+
+        metadata = dict()
         for root, dirs, files in os.walk(walk, onerror=lambda x: self.ui.error(str(x))):
             for d in list(dirs):
-                if os.path.join(root, d) in dir_exceptions:
+                if list(filter(lambda x: re.search(x, os.path.join(root, d)), dir_exceptions)):
                     dirs.remove(d)
-            for d in dirs:
-                dir_from_album_root = os.path.join(root, d).replace(walk, '').strip('/')
-                dir_wo_metachars = dir_from_album_root.replace('/', '_').replace(' ', '_')
-                self.dispatch('exiftool -q -P "-FileName<CreateDate" -d "{0}_%%Y-%%m-%%d_%%H-%%M-%%S%%%%-c.%%%%e" "{1}"'.format(dir_wo_metachars, os.path.join(root, d)))
-            # check for missing CreateDate tag
-            for f in files:
-                if len(self.dispatch('exiftool -CreateDate "{0}"'.format(os.path.join(root, f)),
-                                     None).stdout) == 0:
-                    self.ui.warning('Missing CreateDate tag for: ' + os.path.join(root, f))
+            combined_regex = re.compile('|'.join(file_exceptions))
+            abs_paths = map(lambda x: os.path.join(root, x), files)
+            excl_paths = filter(lambda x: not re.search(combined_regex, x), abs_paths)
+            quoted_paths = ['"' + path + '"' for path in excl_paths]
+            if quoted_paths:
+                out = self.dispatch('exiftool -Orientation {0}'.format(' '.join(quoted_paths)),
+                                    output=None).stdout
+                orientation_tags = out[1::2]
+                metadata.update(zip(excl_paths, orientation_tags))
+        print(metadata)
+            #while(chunks(excl_paths, 10)):
+            #    out = self.dispatch('exiftool -Orientation {0}'.format(' '.join(excl_paths)),
+            #                        output=None).stdout
+            #        if len()out:
+            #            self.ui.warning('No orientation flag: {0}'.format(path))
+            #        elif 'normal' not in out[0]:
+            #            self.ui.info('{0} {1}'.format(out, path))
+
+            #for d in dirs:
+            #    dir_from_album_root = os.path.join(root, d).replace(walk, '').strip('/')
+            #    dir_wo_metachars = dir_from_album_root.replace('/', '_').replace(' ', '_')
+            #    self.dispatch('exiftool -q -P "-FileName<CreateDate" -d "{0}_%%Y-%%m-%%d_%%H-%%M-%%S%%%%-c.%%%%e" "{1}"'.format(dir_wo_metachars, os.path.join(root, d)))
+            ## check for missing CreateDate tag
+            #for f in files:
+            #    if len(self.dispatch('exiftool -CreateDate "{0}"'.format(os.path.join(root, f)),
+            #                         None).stdout) == 0:
+            #        self.ui.warning('Missing CreateDate tag for: ' + os.path.join(root, f))
 
     @ui.log_exec_time
     def admin_check_permissions(self):
@@ -573,19 +718,21 @@ class admin(base.base):
                        dirmask=0o750,
                        filemask=0o640):
             dir_exceptions = (
-                '/mnt/software/linux',
-                '/mnt/work/projects',
+                '/mnt/work/backup/cache',
+                '/mnt/work/backup/pool',
+                '/mnt/work/firewall',
+                '/mnt/work/software',
+                '/mnt/work/usb_boot',
+                '/mnt/work/webserver',
                 )
             file_exceptions = (
-                '/mnt/images/private/hannes',
-                '/mnt/video/private/hannes',
                 )
             for root, dirs, files in os.walk(tree, onerror=lambda x: self.ui.error(str(x))):
                 for d in list(dirs):
-                    if os.path.join(root, d) in dir_exceptions:
+                    if list(filter(lambda x: re.search(x, os.path.join(root, d)), dir_exceptions)):
                         dirs.remove(d)
                 for f in list(files):
-                    if os.path.join(root, f) in file_exceptions:
+                    if list(filter(lambda x: re.search(x, os.path.join(root, f)), file_exceptions)):
                         files.remove(f)
                 if not self.ui.args.dry_run:
                     for d in dirs:
@@ -595,9 +742,7 @@ class admin(base.base):
         
         public = (
             '/mnt/audio',
-            '/mnt/docs',
             '/mnt/games',
-            '/mnt/software',
             '/mnt/video',
             )
         self.ui.info('Setting rights for public data...')
@@ -607,6 +752,7 @@ class admin(base.base):
         self.join()
 
         private = (
+            '/mnt/docs',
             '/mnt/images',
             '/mnt/work',
             )
@@ -701,7 +847,7 @@ class admin(base.base):
         ]
         repos = [
             '/',
-            # enables quick & dirty cruft development with emacs until/or in parallel to eclipse devel
+            # enables quick & dirty cruft development with emacs
             '/usr/bin',
             '/var/lib/layman/nilathak',
             ]
@@ -783,91 +929,13 @@ class admin(base.base):
             self.dispatch('/sbin/fstrim -v ' + mp)
 
     @ui.log_exec_time
-    def admin_check_work(self):
-        # ====================================================================
-        'check data consistency on work'
-
-        # FIXME - check for invalid files in 0_blacklist folder (maybe just allow /mnt/work/0_sort in check_filetypes)
-
-        # FIXME ensure Octave compatibility:
-        # find /mnt/work/0_sort/ -type f | grep '.*\.m$'
-        # /mnt/work/projects/0_archive/WaveProcessor/matlab-sim/*
-        # /mnt/work/projects/0_archive/fpcore/units/fpcoreblks/source/matlab/fpcoreblks/fpcoreblks/slblocks.m
-        # /mnt/work/systems/communication/hsse00_nat_exercises
-        # /mnt/work/systems/dsp/fir iir/example_for_iir_analysis.m
-        # /mnt/work/systems/control/hsse00_ret_exercises
-        # /mnt/work/systems/dsp/hsse00_set5_exercises
-        # /mnt/work/systems/dsp/hsse00_syt4_exercises
-        # /mnt/work/systems/dsp/hsse01_syt4_exercises
-        # /mnt/work/systems/dsp/noiseshaping
-        # ??? mnt/work/systems/modeling/matlab/MSystem
-        # ??? mnt/work/systems/modeling/matlab/mdt
-        
-        
-        walk = self.ui.args.options
-        if not walk:
-            walk = '/mnt/work'
-        sidecar_pdf_expected = re.compile(r'\.doc$|\.nb$|\.ppt$|\.vsd$|\.xls$', re.IGNORECASE)
-        sidecar_pdf_wo_extension_expected = re.compile(r'exercise.*\.tex$', re.IGNORECASE)
-        dir_exceptions = (
-            '/mnt/work/0_sort',
-            '/mnt/work/projects/backup',
-            '/mnt/work/docs/education/thesis/competition',
-            )
-        file_exceptions = (
-            )
-        for root, dirs, files in os.walk(walk, onerror=lambda x: self.ui.error(str(x))):
-            for d in list(dirs):
-                if os.path.join(root, d) in dir_exceptions:
-                    dirs.remove(d)
-            for f in list(files):
-                if os.path.join(root, f) in file_exceptions:
-                    files.remove(f)
-            for f in files:
-                sidecar = f + '.pdf'
-                sidecar_wo_extension = os.path.splitext(f)[0] + '.pdf'
-                if (sidecar_pdf_expected.search(f) and not sidecar in files or
-                    sidecar_pdf_wo_extension_expected.search(f) and not sidecar_wo_extension in files):
-                    self.ui.warning('Sidecar PDF expected for: ' + os.path.join(root, f))
-        #'embed OCR text in scanned PDF file'
-        #
-        #if not opts:
-        #    raise self.exc_class('give a pdf filename via -o switch')
-        #pdf_file = opts
-        #pdf_base = os.path.splitext(pdf_file)[0]
-        #
-        #self.ui.ext_info('Extracting pages from scanned PDF...')
-        #self.dispatch('pdfimages {0} {1}'.format(pdf_file, pdf_base),
-        #              output='stderr')
-        #
-        ## determine list of extracted image files
-        ## FIXME check if extracted images are in A4 format (pdfimages does not care if a pdf was scanned or not, this may lead to extracted logo images and such stuff)
-        ## FIXME convert to TIF file directly using the -tiff switch of pdfimages
-        #images = glob.iglob('{0}-[0-9]*.ppm'.format(pdf_base))
-        #
-        #for image in images:
-        #    ppm_base = os.path.splitext(image)[0]
-        #    tif_file = ppm_base + '.tif'
-        #
-        #    self.ui.ext_info('Apply threshold to {0}...'.format(ppm_base))
-        #    # FIXME find optimal threshold value for OCR (test with
-        #    # multiple pdfs)
-        #    # FIXME what is this threshold value? color space?
-        #    self.dispatch('convert {0} -threshold 50000 {1}'.format(image, tif_file),
-        #                  output='stderr')
-        #
-        #    self.dispatch('TESSDATA_PREFIX=/usr/share/ tesseract {0} {1} -l deu'.format(tif_file, ppm_base),
-        #                  output='stderr')
-        #
-        #    # FIXME
-        #    # embed media text into pdf file
-        #
-
-    @ui.log_exec_time
     def admin_kernel(self):
         # ====================================================================
         'scripting stuff to build kernels'
 
+        key_mp = '/tmp/keyring'
+        key_image = '/mnt/work/usb_boot'
+        
         self.dispatch('eselect kernel list', passive=True)
         selection = input('which kernel?')
         self.dispatch('eselect kernel set ' + selection)
@@ -876,11 +944,11 @@ class admin(base.base):
 
         # install kernel to USB keyrings
         try:
-            self.dispatch('mkdir /tmp/keyring', output='stdout')
+            self.dispatch('mkdir ' + key_mp, output='stdout')
         except self.exc_class:
             pass
         try:
-            self.dispatch('rm -rf /boot; ln -s /tmp/keyring/' + self.ui.hostname + ' /boot', output='stdout')
+            self.dispatch('rm -rf /boot; ln -s {0}/{1} /boot'.format(key_mp, self.ui.hostname), output='stdout')
         except self.exc_class:
             pass
 
@@ -900,14 +968,14 @@ class admin(base.base):
         except self.exc_class:
             pass
 
-        self.dispatch('mount ' + part + ' /tmp/keyring')
+        self.dispatch('mount {0} {1}'.format(part, key_mp))
         self.dispatch('make install')
 
         self.ui.info('install grub modules + embed into boot sector')
-        self.dispatch('grub-install ' + dev + ' --boot-directory=/tmp/keyring/boot')
+        self.dispatch('grub-install {0} --boot-directory={1}/boot'.format(dev, key_mp))
         if not self.ui.args.no_backup:
             self.ui.info('rsync new grub installation to keyring backup')
-            self.dispatch('rsync -a /tmp/keyring/boot /mnt/work/projects/usb_boot --exclude="/boot/grub/grub.cfg"',
+            self.dispatch('rsync -a {0}/boot {1} --exclude="/boot/grub/grub.cfg"'.format(key_mp, key_image),
                           output='both')
         self.ui.info('install host-specific grub.cfg (grub detects underlying device and correctly uses absolute paths to kernel images)')
         self.dispatch('grub-mkconfig -o /boot/grub/grub.cfg')
@@ -931,8 +999,10 @@ class admin(base.base):
             if not self.ui.args.force:
                 self.ui.info('Use -f to apply sync!')
                 dry_run = 'n'
-            self.dispatch('rsync -av' + dry_run + ' --modify-window 1 --no-perms --no-owner --no-group --inplace --delete /mnt/work/projects/usb_boot/ /tmp/keyring ' + ' '.join(rsync_exclude),
-                      output='both')
+            self.dispatch('rsync -av' + dry_run + ' --modify-window 1 --no-perms --no-owner --no-group --inplace --delete {0}/ {1} {2}'.format(key_image,
+                                                                                                                                              key_mp,
+                                                                                                                                              ' '.join(rsync_exclude)),
+                          output='both')
 
         try:
             while True:
@@ -981,6 +1051,8 @@ class admin(base.base):
         # ====================================================================
         'renew random guest access key for wlan'
         # FIXME
+        # - regenerate WPA passphrase by generating an OTP from google-authenticator PAM module
+        # - generate matching OTP via app on my own phone, and show it to guests for time-limited login
         pass
 
     def admin_spindown(self):
@@ -1042,7 +1114,7 @@ class admin(base.base):
         self.ui.info('Checking for updates...')
         try:
             self.dispatch('{0} {1} {2}'.format(
-                'emerge --nospinner --autounmask-keep-masks --keep-going --with-bdeps=y -uDNv world',
+                'emerge --nospinner --autounmask-keep-masks --keep-going --verbose-conflict --with-bdeps=y -uDNv world',
                 '-p' if not self.ui.args.force else '',
                 '-t' if self.ui.args.tree else ''),
                           output='nopipes')
@@ -1100,7 +1172,7 @@ class admin(base.base):
                 else:
                     raise exc
      
-        image = '/mnt/work/projects/hypnocube/WRAP.1E.img'
+        image = '/mnt/work/hypnocube/WRAP.1E.img'
         local = '/tmp/wrap'
         device = 'belial'
         rsync_exclude = (
