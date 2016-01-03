@@ -20,6 +20,7 @@ class ui(ui.ui):
          
         self.init_op_parser()
         self.parser_check_repos.add_argument('-l', '--list_files', action='store_true')
+        self.parser_check_repos.add_argument('-r', '--rebase', action='store_true')
         self.parser_kernel.add_argument('--no-backup', action='store_true', help='do not overwrite keyring content with backup')
         self.parser_kernel.add_argument('-s', '--small', action='store_true', help='skip rsync of large ISOs')
         self.parser_sync.add_argument('-t', '--tree', action='store_true')
@@ -340,7 +341,6 @@ class admin(base.base):
             'work': re.compile('.*'),
             }
 
-        # FIXME search all folder for syncthings tmp files: ~Past.pst.tmp
         forbidden_global = re.compile('sync-conflict|/~[^~]*\.tmp$', re.IGNORECASE)
         forbidden = {
             'audio': re.compile('a^'),
@@ -843,7 +843,13 @@ class admin(base.base):
     @ui.log_exec_time
     def admin_check_repos(self):
         # ====================================================================
-        'report state of administrative repositories'
+        'report state of administrative git repositories (+ optional rebase)'
+        # FIXME
+        # - implement fast MD5 check to determine if file is not needed in repo anymore
+        # REBASE FLOW HOWTO
+        # - host MUST NEVER be merged onto master; ALWAYS operate on master directly, or just cherry-pick from host to master
+        # - rebasing host with remote master ensures a minimal diffset ("superimposing" files are auto-removed if no longer needed)
+        # - avoid host branches on github, since host branches tend to include security-sensitive files
 
         host_branches = [
             'diablo',
@@ -857,68 +863,86 @@ class admin(base.base):
             ]
 
         for repo in repos:
-            self.ui.info('######################### Checking repo at {0}...'.format(repo))
-            git_cmd = 'cd ' + repo + ' && git '
-            
-            # host branch existing?
-            try:
-                self.dispatch(git_cmd + 'branch | grep ' + self.ui.hostname,
-                              output=None, passive=True)
-            except self.exc_class:
-                host_files = list()
-                host_files_diff = list()
+
+            if self.ui.args.rebase:
+                self.ui.info('Rebasing repo at {0}...'.format(repo))
+                git_cmd = 'cd ' + repo + ' && git '
+
+                self.dispatch(git_cmd + 'stash',
+                              output='stderr')
+                self.dispatch(git_cmd + 'pull -r',
+                              output='both')
+                try:
+                    self.dispatch(git_cmd + 'stash show',
+                                  output=None)
+                except self.exc_class:
+                    pass
+                else:
+                    self.dispatch(git_cmd + 'stash pop',
+                                  output='stderr')
             else:
-                # Finding host-specific files (host-only + superimposed)
-                host_files_actual = self.dispatch(git_cmd + 'diff origin/master ' + self.ui.hostname + ' --name-only', output=None, passive=True).stdout
-                # host branches can only modify files from master branch or add new ones
-                host_files = self.dispatch(git_cmd + 'diff origin/master ' + self.ui.hostname + ' --name-only --diff-filter=AM', output=None, passive=True).stdout
-                host_files.sort()
-                host_files_unexpect = set(host_files_actual) - set(host_files)
-                if host_files_unexpect:
-                    raise self.exc_class('unexpected host-specific diff:' + os.linesep + os.linesep.join(sorted(host_files_unexpect)))
-                host_files_diff = self.dispatch(git_cmd + 'diff ' + self.ui.hostname + ' --name-only -- ' + ' '.join(host_files),
-                                                output=None, passive=True).stdout
+                self.ui.info('######################### Checking repo at {0}...'.format(repo))
+                git_cmd = 'cd ' + repo + ' && git '
 
-            # Finding master-specific files (common files)
-            all_files = self.dispatch(git_cmd + 'ls-files',
-                                      output=None, passive=True).stdout
-            master_files = list(set(all_files) - set(host_files))
-            master_files.sort()
-            master_files_diff = self.dispatch(git_cmd + 'diff origin/master --name-only -- ' + ' '.join(master_files),
-                                              output=None, passive=True).stdout
+                # host branch existing?
+                try:
+                    self.dispatch(git_cmd + 'branch | grep ' + self.ui.hostname,
+                                  output=None, passive=True)
+                except self.exc_class:
+                    host_files = list()
+                    host_files_diff = list()
+                else:
+                    # Finding host-specific files (host-only + superimposed)
+                    host_files_actual = self.dispatch(git_cmd + 'diff origin/master ' + self.ui.hostname + ' --name-only', output=None, passive=True).stdout
+                    # host branches can only modify files from master branch or add new ones
+                    host_files = self.dispatch(git_cmd + 'diff origin/master ' + self.ui.hostname + ' --name-only --diff-filter=AM', output=None, passive=True).stdout
+                    host_files.sort()
+                    host_files_unexpect = set(host_files_actual) - set(host_files)
+                    if host_files_unexpect:
+                        raise self.exc_class('unexpected host-specific diff:' + os.linesep + os.linesep.join(sorted(host_files_unexpect)))
+                    host_files_diff = self.dispatch(git_cmd + 'diff ' + self.ui.hostname + ' --name-only -- ' + ' '.join(host_files),
+                                                    output=None, passive=True).stdout
 
-            # display repo status
-            if host_files_diff:
-                host_files_stat = self.dispatch(git_cmd + 'diff ' + self.ui.hostname + ' --name-status -- ' + ' '.join(host_files),
-                                                output=None, passive=True).stdout
-                self.ui.info('Host status:' + os.linesep + os.linesep.join(host_files_stat))
-            if master_files_diff:
-                master_files_stat = self.dispatch(git_cmd + 'diff origin/master --name-status -- ' + ' '.join(master_files),
+                # Finding master-specific files (common files)
+                all_files = self.dispatch(git_cmd + 'ls-files',
+                                          output=None, passive=True).stdout
+                master_files = list(set(all_files) - set(host_files))
+                master_files.sort()
+                master_files_diff = self.dispatch(git_cmd + 'diff origin/master --name-only -- ' + ' '.join(master_files),
                                                   output=None, passive=True).stdout
-                self.ui.info('Master status:' + os.linesep + os.linesep.join(master_files_stat))
-                
-                # export master changes to avoid checking out master branch instead of host branch
-                if host_files:
-                    url = self.dispatch(git_cmd + 'config --get remote.origin.url',
-                                        output=None, passive=True).stdout[0]
-                    clone_path = '/tmp/' + os.path.basename(url)
-                    self.ui.info('Preparing temporary master repo for {0} into {1}...'.format(repo, clone_path))
-                    try:
-                        self.dispatch(git_cmd + 'clone {0} {1}'.format(url, clone_path),
-                                      output='stdout')
-                    except self.exc_class:
-                        pass
-                    for f in master_files:
-                        self.dispatch('cp {0} {1}'.format(os.path.join(repo, f),
-                                                          os.path.join(clone_path, f)),
-                                      output='stderr')
 
-            # optionally display repo files
-            if self.ui.args.list_files:
-                if host_files:
-                    self.ui.info('Host files:' + os.linesep + os.linesep.join(host_files))
-                if master_files:
-                    self.ui.info('Master files:' + os.linesep + os.linesep.join(master_files))
+                # display repo status
+                if host_files_diff:
+                    host_files_stat = self.dispatch(git_cmd + 'diff ' + self.ui.hostname + ' --name-status -- ' + ' '.join(host_files),
+                                                    output=None, passive=True).stdout
+                    self.ui.info('Host status:' + os.linesep + os.linesep.join(host_files_stat))
+                if master_files_diff:
+                    master_files_stat = self.dispatch(git_cmd + 'diff origin/master --name-status -- ' + ' '.join(master_files),
+                                                      output=None, passive=True).stdout
+                    self.ui.info('Master status:' + os.linesep + os.linesep.join(master_files_stat))
+
+                    # export master changes to avoid checking out master branch instead of host branch
+                    if host_files:
+                        url = self.dispatch(git_cmd + 'config --get remote.origin.url',
+                                            output=None, passive=True).stdout[0]
+                        clone_path = '/tmp/' + os.path.basename(url)
+                        self.ui.info('Preparing temporary master repo for {0} into {1}...'.format(repo, clone_path))
+                        try:
+                            self.dispatch(git_cmd + 'clone {0} {1}'.format(url, clone_path),
+                                          output='stdout')
+                        except self.exc_class:
+                            pass
+                        for f in master_files:
+                            self.dispatch('cp {0} {1}'.format(os.path.join(repo, f),
+                                                              os.path.join(clone_path, f)),
+                                          output='stderr')
+
+                # optionally display repo files
+                if self.ui.args.list_files:
+                    if host_files:
+                        self.ui.info('Host files:' + os.linesep + os.linesep.join(host_files))
+                    if master_files:
+                        self.ui.info('Master files:' + os.linesep + os.linesep.join(master_files))
         
     @ui.log_exec_time
     def admin_check_ssd(self):
@@ -1019,38 +1043,6 @@ class admin(base.base):
         self.dispatch('make modules_install')
         self.dispatch('emerge @module-rebuild', output='nopipes')
 
-    def admin_repos_rebase(self):
-        # ====================================================================
-        'deliver admin repos to github'
-        # FIXME
-        # - implement fast MD5 check to determine if file is not needed in repo anymore
-        # FLOW HOWTO
-        # - host MUST NEVER be merged onto master; ALWAYS operate on master directly, or just cherry-pick from host to master
-        # - rebasing host with remote master ensures a minimal diffset ("superimposing" files are auto-removed if no longer needed)
-        # - avoid host branches on github, since host branches tend to include security-sensitive files
-        repos = [
-            '/',
-            '/usr/bin',
-            '/var/lib/layman/nilathak',
-            ]
-
-        for repo in repos:
-            self.ui.info('Rebasing repo at {0}...'.format(repo))
-            git_cmd = 'cd ' + repo + ' && git '
-            
-            self.dispatch(git_cmd + 'stash',
-                          output='stderr')
-            self.dispatch(git_cmd + 'pull -r',
-                          output='both')
-            try:
-                self.dispatch(git_cmd + 'stash show',
-                              output=None)
-            except self.exc_class:
-                pass
-            else:
-                self.dispatch(git_cmd + 'stash pop',
-                              output='stderr')
-
     def admin_rotate_wpa(self):
         # ====================================================================
         'renew random guest access key for wlan'
@@ -1063,6 +1055,8 @@ class admin(base.base):
         # ====================================================================
         'force large HDD into standby mode'
 
+        # FIXME remove try/except after spurious error has been located
+        
         luks_uuid = 'd6464602-14fc-485c-befc-d22ba8e4d533'
         btrfs_label = 'pool'
 
@@ -1073,26 +1067,35 @@ class admin(base.base):
 
             self.ui.debug('checking for ongoing IO operations using a practical hysteresis')
             try:
-                device = os.path.basename(self.dispatch('/sbin/findfs UUID=' + luks_uuid,
-                                                        output=None, passive=True).stdout[0])
-                io_ops_1st = self.dispatch('cat /proc/diskstats | grep ' + device,
-                                           output=None, passive=True).stdout[0]
-            except self.exc_class:
-                raise self.exc_class("Container HDD not found!")
+                try:
+                    device = os.path.basename(self.dispatch('/sbin/findfs UUID=' + luks_uuid,
+                                                            output=None, passive=True).stdout[0])
+                    io_ops_1st = self.dispatch('cat /proc/diskstats | grep ' + device,
+                                               output=None, passive=True).stdout[0]
+                except self.exc_class:
+                    raise self.exc_class("Container HDD not found!")
+            except:
+                raise self.exc_class("failed 1st section")
             
             # 60s buffer to next run-crons job
             time.sleep(60 / frequency_per_hour * 59)
-            
-            io_ops_2nd = self.dispatch('cat /proc/diskstats | grep ' + device,
-                                       output=None, passive=True).stdout[0]
+
+            try:
+                io_ops_2nd = self.dispatch('cat /proc/diskstats | grep ' + device,
+                                           output=None, passive=True).stdout[0]
+            except:
+                raise self.exc_class("failed 2nd section")
 
             if io_ops_1st == io_ops_2nd:
-                self.ui.debug('Ensure filesystem buffers are flushed')
+                try:
+                    self.ui.debug('Ensure filesystem buffers are flushed')
 
-                btrfs_device = self.dispatch('/sbin/findfs LABEL=' + btrfs_label,
-                                             output=None, passive=True).stdout[0]
-                out = self.dispatch('cat /proc/mounts | grep ' + btrfs_device,
-                                    output=None, passive=True).stdout[0]
+                    btrfs_device = self.dispatch('/sbin/findfs LABEL=' + btrfs_label,
+                                                 output=None, passive=True).stdout[0]
+                    out = self.dispatch('cat /proc/mounts | grep ' + btrfs_device,
+                                        output=None, passive=True).stdout[0]
+                except:
+                    raise self.exc_class("failed 3rd section")
                 dev,mp,*rest = out.split(' ')
                 if dev == btrfs_device:
                     self.dispatch('btrfs filesystem sync ' + mp,
@@ -1110,7 +1113,7 @@ class admin(base.base):
                       output='stderr')
         # push result of successful rebase
         # sync is always started manually from root shell, thus ssh-agent should provide key
-        self.dispatch('cd /usr/portage && git push',
+        self.dispatch('cd /usr/portage && git push origin master',
                       output='stderr')
         self.dispatch('emaint sync -A',
                       output='stderr')
