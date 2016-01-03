@@ -19,12 +19,12 @@ class ui(ui.ui):
         self.parser_common.add_argument('-f', '--force', action='store_true')
          
         self.init_op_parser()
+        self.parser_check_repos.add_argument('-l', '--list_files', action='store_true')
         self.parser_kernel.add_argument('--no-backup', action='store_true', help='do not overwrite keyring content with backup')
         self.parser_kernel.add_argument('-s', '--small', action='store_true', help='skip rsync of large ISOs')
-         
-        self.parser_check_repos.add_argument('-l', '--list_files', action='store_true')
         self.parser_sync.add_argument('-t', '--tree', action='store_true')
         self.parser_update.add_argument('-t', '--tree', action='store_true')
+        self.parser_wrap.add_argument('-s', '--sync', action='store_true', help='sync to device')
 
     def setup(self):
         super().setup()
@@ -122,11 +122,15 @@ class admin(base.base):
                 btrfs_mp_map[label] = mp;
 
         def job(label, mp):
-            self.ui.info('Scrubbing {0}...'.format(label))
-            self.dispatch('/sbin/btrfs scrub start -BR -c 3 ' + mp)
+
+            # http://marc.merlins.org/perso/btrfs/post_2014-03-19_Btrfs-Tips_-Btrfs-Scrub-and-Btrfs-Filesystem-Repair.html
+            # Even in 4.3 kernels, you can still get in places where balance won't work (no place left, until you run a -m0 one first)
+            for percent in range(0,51,10):
+                self.ui.info('Balancing metadata + data chunks with {1}% usage for {0}...'.format(label, percent))
+                self.dispatch('nice -10 /sbin/btrfs balance start -musage={0} -dusage={0} {1}'.format(percent, mp))
             
-            self.ui.info('Balancing metadata + data chunks for {0}...'.format(label))
-            self.dispatch('/sbin/btrfs balance start -v -musage=50 -dusage=50 ' + mp)
+            self.ui.info('Scrubbing {0}...'.format(label))
+            self.dispatch('nice -10 /sbin/btrfs scrub start -Bd ' + mp)
             
             self.ui.info('Final usage stats for {0}...'.format(label))
             self.dispatch('/sbin/btrfs fi usage ' + mp,
@@ -307,7 +311,8 @@ class admin(base.base):
         allowed = {
             'audio': re.compile('\.flac$|\.mp3$|\.ogg$|cover\.jpg$'),
             # FIXME remove 0_sort after major filetype cleanup
-            'docs': re.compile('\.epub$|\.jpg$|\.opf$|\.pdf$|\.tex$|/0_sort/.*'),
+            #'docs': re.compile('\.epub$|\.jpg$|\.opf$|\.pdf$|\.tex$|/0_sort/.*'),
+            'docs': re.compile('.*'),
             # FIXME check for any files in games 0_blacklist folder
             'games': re.compile('.*'),
             # FIXME
@@ -348,7 +353,6 @@ class admin(base.base):
         
         dir_exceptions = (
             '/mnt/work/backup',
-            '/mnt/docs/education/thesis/competition/', #FIXME
             )
         file_exceptions = (
             '/mnt/audio/comedy/.stfolder',
@@ -718,12 +722,12 @@ class admin(base.base):
                        dirmask=0o750,
                        filemask=0o640):
             dir_exceptions = (
-                '/mnt/work/backup/cache',
-                '/mnt/work/backup/pool',
-                '/mnt/work/firewall',
-                '/mnt/work/software',
-                '/mnt/work/usb_boot',
-                '/mnt/work/webserver',
+                #'/mnt/work/backup/cache',
+                #'/mnt/work/backup/pool',
+                #'/mnt/work/firewall',
+                #'/mnt/work/software',
+                #'/mnt/work/usb_boot',
+                #'/mnt/work/webserver',
                 )
             file_exceptions = (
                 )
@@ -754,7 +758,7 @@ class admin(base.base):
         private = (
             '/mnt/docs',
             '/mnt/images',
-            '/mnt/work',
+            #'/mnt/work', just dont, otherwise new git repos will show a complete diff
             )
         self.ui.info('Setting rights for private data...')
         for p in private:
@@ -762,7 +766,7 @@ class admin(base.base):
                           blocking=False)
         self.join()
 
-        self.ui.info('Checking for inconsistent passwd/group files...')
+        self.ui.info('Checking for inconsistent passwd/group files (fix with pwck & grpck)...')
         try:
             self.dispatch('pwck -qr')
         except self.exc_class:
@@ -1101,9 +1105,17 @@ class admin(base.base):
     def admin_sync(self):
         # ====================================================================
         'sync ebuild repositories'
+        # rebase my gentoo mirror to upstream
+        self.dispatch('cd /usr/portage && git pull -r upstream master',
+                      output='stderr')
+        # push result of successful rebase
+        # sync is always started manually from root shell, thus ssh-agent should provide key
+        self.dispatch('cd /usr/portage && git push',
+                      output='stderr')
         self.dispatch('emaint sync -A',
                       output='stderr')
-        self.dispatch('eix-update',
+        # FIXME CACHE_METHOD stuff necessary due to gentoo git repo
+        self.dispatch('CACHE_METHOD="/usr/portage/ parse|ebuild*" eix-update',
                       output='stderr')
         self.admin_update()
         
@@ -1141,24 +1153,10 @@ class admin(base.base):
         'mount wrap image for local administration'
 
         # FIXME
-        #Loading Linux 3.18.7-gentoo ...
+        #Loading Linux 4.3.3-gentoo ...
         #CPU: vendor_id 'Geode by NSC' unknown, using generic init.
         #CPU: Your system may be unstable.
         #i8042: No controller found
-        #sc1200wdt: io parameter must be specified
-        #mce: Unable to init device /dev/mcelog (rc: -5)
-        
-        # Notice: NX (Execute Disable) protection missing in CPU!
-        # DMI not present or invalid.
-        # raid6: mmxx1       35 MB/s
-        # raid6: mmxx2       58 MB/s
-        # raid6: int32x1     15 MB/s
-        # raid6: int32x2     23 MB/s
-        # raid6: int32x4     23 MB/s
-        # raid6: int32x8     23 MB/s
-        # raid6: using algorithm mmxx2 (58 MB/s)
-        # raid6: using intx1 recovery algorithm
-        #  
         #  * Setting console font [lat9w-16] ...
         #  [ ok ]
         # getfont: KDFONTOP: No space left on device
@@ -1237,31 +1235,26 @@ class admin(base.base):
                 self.dispatch('umount ' + os.path.join(local, dest.strip('/')),
                               output='stderr')
      
-            self.ui.info('Syncing changes to device...')
             try:
-                try:
-                    self.dispatch('ping ' + device + ' -c 1',
-                                  output='stderr')
-                    dry_run = 'n'
-                    if self.ui.args.force:
-                        dry_run = ''
+                if self.ui.args.sync:
+                    self.ui.info('Syncing changes to device...')
                     try:
-                        self.dispatch('rsync -aHv' + dry_run + ' --delete ' + local + '/ ' + device + ':/ ' + ' '.join(rsync_exclude),
-                                      output='both')
-                        if not self.ui.args.force:
-                            self.ui.info('The device files above will be lost after the rsync! OK? Use the force then ;)...')
-                        else:
+                        self.dispatch('ping ' + device + ' -c 1',
+                                      output='stderr')
+                        try:
+                            self.dispatch('rsync -aHv --delete ' + local + '/ ' + device + ':/ ' + ' '.join(rsync_exclude),
+                                          output='both')
                             self.ui.info('Updating grub in native environment...')
                             self.dispatch('ssh {0} grub-install /dev/sda'.format(device),
                                           output='both')
                             self.dispatch('ssh {0} grub-mkconfig -o /boot/grub/grub.cfg'.format(device),
                                           output='both')
+                        except self.exc_class:
+                            self.ui.warning('Something went wrong during the rsync process...')
                     except self.exc_class:
-                        self.ui.warning('Something went wrong during the sync process...')
-                except self.exc_class:
-                    self.ui.warning('Device is offline, changes are NOT synced...')
+                        self.ui.warning('Device is offline, changes are NOT synced...')
             finally:
-                self.dispatch('umount ' + local,
+                self.dispatch('sleep 0.2 && umount ' + local,
                               output='stderr')
         else:
             self.ui.warning('No other device chroot environment should be open while doing rsync, close them...')
