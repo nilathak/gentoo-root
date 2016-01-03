@@ -8,7 +8,6 @@ import pylon.gentoo.ui as ui
 
 transfer_engines = (
     'btrfs',
-    #'rdiff',     # deprecated, replaced by btrfs
     'partclone',
     'rsync',
     'unison',
@@ -18,10 +17,10 @@ auto_tasks = {
     'diablo': (
         ('/mnt/work/backup/cache/diablo',
          '/mnt/work/backup/cache',
-         'btrfs', '10h10d'),
+         'btrfs', '10h'),
         ('/mnt/work/backup/cache/diablo',
          '/mnt/work/backup/pool',
-         'btrfs', '2d2m'),
+         'btrfs', '10d2m'),
         ('/mnt/work/backup/pool/games',
          '/mnt/work/backup/pool',
          'btrfs', '2d2m'),
@@ -33,6 +32,12 @@ auto_tasks = {
 
 manual_tasks = {
     'diablo': (
+
+        # <mount via KDE>
+        # admin.py check_btrfs -o extpool --mail && backup.py manual --mail
+        # <unmount via KDE>
+        # hdparm -y `findfs UUID=<extpool>`
+        
         ('/mnt/work/backup/cache/diablo',
          '/run/media/schweizer/extpool',
          'btrfs', '1h6m4y'), # add hour interval to allow easy manual refresh at any time
