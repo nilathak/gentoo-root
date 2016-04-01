@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 import collections
+import dbus
 import errno
+import getpass
 import itertools
 import json
 import multiprocessing
 import os
+import psutil
 import pylon.base as base
 import pylon.gentoo.job as job
 import pylon.gentoo.ui as ui
@@ -23,7 +26,7 @@ class ui(ui.ui):
         self.parser_check_repos.add_argument('-r', '--rebase', action='store_true')
         self.parser_kernel.add_argument('--no-backup', action='store_true', help='do not overwrite keyring content with backup')
         self.parser_kernel.add_argument('-s', '--small', action='store_true', help='skip rsync of large ISOs')
-        self.parser_sync.add_argument('-t', '--tree', action='store_true')
+        self.parser_update.add_argument('-s', '--sync', action='store_true')
         self.parser_update.add_argument('-t', '--tree', action='store_true')
         self.parser_wrap.add_argument('-s', '--sync', action='store_true', help='sync to device')
 
@@ -69,8 +72,7 @@ class admin(base.base):
                     self.ui.warning('No album cover detected: {0}'.format(root))
 
         # process file list in chunks to avoid: Argument list is too long
-        chunk_size = 1000
-        for chunk in [media_files[x:x+chunk_size] for x in range(0, len(media_files), chunk_size)]:
+        for chunk in self.chunk(1000, media_files):
             out = self.dispatch('exiftool -j "{0}"'.format('" "'.join(chunk)),
                                 output=None).stdout
             for file_dict in json.loads(os.linesep.join(out)):
@@ -126,7 +128,7 @@ class admin(base.base):
 
             # http://marc.merlins.org/perso/btrfs/post_2014-03-19_Btrfs-Tips_-Btrfs-Scrub-and-Btrfs-Filesystem-Repair.html
             # Even in 4.3 kernels, you can still get in places where balance won't work (no place left, until you run a -m0 one first)
-            for percent in range(0,51,10):
+            for percent in self.unique_logspace(10, 77):
                 self.ui.info('Balancing metadata + data chunks with {1}% usage for {0}...'.format(label, percent))
                 self.dispatch('nice -10 /sbin/btrfs balance start -musage={0} -dusage={0} {1}'.format(percent, mp))
             
@@ -278,6 +280,9 @@ class admin(base.base):
         ntfs_invalid_trailing_chars = re.compile(r'\.$|^\ |\ $')
             
         dir_exceptions = (
+            '/mnt/audio/0_sort/0_blacklist',
+            '/mnt/games/0_sort/0_blacklist',
+            '/mnt/video/0_sort/0_blacklist',
             '/mnt/work/backup',
             )
         file_exceptions = (
@@ -859,7 +864,6 @@ class admin(base.base):
             '/',
             # enables quick & dirty cruft development with emacs
             '/usr/bin',
-            '/var/lib/layman/nilathak',
             ]
 
         for repo in repos:
@@ -923,7 +927,7 @@ class admin(base.base):
 
                     # export master changes to avoid checking out master branch instead of host branch
                     if host_files:
-                        url = self.dispatch(git_cmd + 'config --get remote.origin.url',
+                        url = self.dispatch(git_cmd + 'config --get remote.upstream.url',
                                             output=None, passive=True).stdout[0]
                         clone_path = '/tmp/' + os.path.basename(url)
                         self.ui.info('Preparing temporary master repo for {0} into {1}...'.format(repo, clone_path))
@@ -956,6 +960,18 @@ class admin(base.base):
         for mp in ssd_mount_points[self.ui.hostname]:
             self.dispatch('/sbin/fstrim -v ' + mp)
 
+    def admin_dpms_sleep(self):
+        # ====================================================================
+        'force monitor into DPMS sleep'
+        #FIXME
+        # - delete kde notifications setting afterwards
+        # - start from kde lock notification => two idle time measurements?
+        
+        #while True:
+        #    time.sleep(10)
+        #    self.dispatch('xset dpms force off')
+        #    - if not locked => break
+            
     @ui.log_exec_time
     def admin_kernel(self):
         # ====================================================================
@@ -1043,6 +1059,34 @@ class admin(base.base):
         self.dispatch('make modules_install')
         self.dispatch('emerge @module-rebuild', output='nopipes')
 
+    def admin_luks_container(self):
+        # ====================================================================
+        'access luks container via udisks2'
+        # FIXME
+        # - use usb keyfile + simple pwd, or complex pwd from keepass db
+        
+        bus = dbus.SystemBus()
+        udisks2_manager_obj = bus.get_object('org.freedesktop.UDisks2', '/org/freedesktop/UDisks2/Manager')
+        
+        with open('/mnt/work/luks/container', 'r+b') as container:
+            udisks2_manager = dbus.Interface(udisks2_manager_obj, 'org.freedesktop.UDisks2.Manager')
+            loop_obj_path = udisks2_manager.LoopSetup(container.fileno(), {})
+            loop_obj = bus.get_object('org.freedesktop.UDisks2', loop_obj_path)
+            try:
+                loop = dbus.Interface(loop_obj, 'org.freedesktop.UDisks2.Encrypted')
+                decrypt_obj_path = loop.Unlock(getpass.getpass(), {})
+                decrypt_obj = bus.get_object('org.freedesktop.UDisks2', decrypt_obj_path)
+                try:
+                    decrypt = dbus.Interface(decrypt_obj, 'org.freedesktop.UDisks2.Filesystem')
+                    mount_path = decrypt.Mount({})
+                    self.dispatch('dolphin ' + mount_path, output=None)
+                    decrypt.Unmount({})
+                finally:
+                    loop.Lock({})
+            finally:
+                loop = dbus.Interface(loop_obj, 'org.freedesktop.UDisks2.Loop')
+                loop.Delete({})
+
     def admin_rotate_wpa(self):
         # ====================================================================
         'renew random guest access key for wlan'
@@ -1055,77 +1099,70 @@ class admin(base.base):
         # ====================================================================
         'force large HDD into standby mode'
 
-        # FIXME remove try/except after spurious error has been located
-        
         luks_uuid = 'd6464602-14fc-485c-befc-d22ba8e4d533'
         btrfs_label = 'pool'
-
         frequency_per_hour = 4
+
+        # find devices
+        device = os.path.basename(self.dispatch('/sbin/findfs UUID=' + luks_uuid,
+                                                output=None, passive=True).stdout[0])
+        btrfs_device = self.dispatch('/sbin/findfs LABEL=' + btrfs_label,
+                                     output=None, passive=True).stdout[0]
+        ignore_dev,mp,*ignore_rest = self.dispatch('cat /proc/mounts | grep ' + btrfs_device,
+                                                   output=None, passive=True).stdout[0].split(' ')
         
         # script will be run via cron.hourly
         for i in range(frequency_per_hour):
 
             self.ui.debug('checking for ongoing IO operations using a practical hysteresis')
-            try:
-                try:
-                    device = os.path.basename(self.dispatch('/sbin/findfs UUID=' + luks_uuid,
-                                                            output=None, passive=True).stdout[0])
-                    io_ops_1st = self.dispatch('cat /proc/diskstats | grep ' + device,
-                                               output=None, passive=True).stdout[0]
-                except self.exc_class:
-                    raise self.exc_class("Container HDD not found!")
-            except:
-                raise self.exc_class("failed 1st section")
+            io_ops_1st = str(psutil.disk_io_counters(True)[device])
             
             # 60s buffer to next run-crons job
             time.sleep(60 / frequency_per_hour * 59)
 
-            try:
-                io_ops_2nd = self.dispatch('cat /proc/diskstats | grep ' + device,
-                                           output=None, passive=True).stdout[0]
-            except:
-                raise self.exc_class("failed 2nd section")
-
+            io_ops_2nd = str(psutil.disk_io_counters(True)[device])
             if io_ops_1st == io_ops_2nd:
-                try:
-                    self.ui.debug('Ensure filesystem buffers are flushed')
-
-                    btrfs_device = self.dispatch('/sbin/findfs LABEL=' + btrfs_label,
-                                                 output=None, passive=True).stdout[0]
-                    out = self.dispatch('cat /proc/mounts | grep ' + btrfs_device,
-                                        output=None, passive=True).stdout[0]
-                except:
-                    raise self.exc_class("failed 3rd section")
-                dev,mp,*rest = out.split(' ')
-                if dev == btrfs_device:
-                    self.dispatch('btrfs filesystem sync ' + mp,
-                                  output=None)
-                    
+                self.ui.debug('Ensure filesystem buffers are flushed')
+                self.dispatch('btrfs filesystem sync ' + mp,
+                              output=None)
                 self.ui.debug('Spinning down...')
                 self.dispatch('hdparm -y /dev/' + device,
                               output=None)
 
-    def admin_sync(self):
-        # ====================================================================
-        'sync ebuild repositories'
-        # rebase my gentoo mirror to upstream
-        self.dispatch('cd /usr/portage && git pull -r upstream master',
-                      output='stderr')
-        # push result of successful rebase
-        # sync is always started manually from root shell, thus ssh-agent should provide key
-        self.dispatch('cd /usr/portage && git push origin master',
-                      output='stderr')
-        self.dispatch('emaint sync -A',
-                      output='stderr')
-        # FIXME CACHE_METHOD stuff necessary due to gentoo git repo
-        self.dispatch('CACHE_METHOD="/usr/portage/ parse|ebuild*" eix-update',
-                      output='stderr')
-        self.admin_update()
-        
     def admin_update(self):
         # ====================================================================
         'update portage'
 
+        if self.ui.args.sync:
+            self.ui.info('Rebasing my gentoo mirror to upstream...')
+            git_cmd = 'cd /usr/portage && git '
+
+            self.dispatch(git_cmd + 'stash',
+                          output='stderr')
+            self.dispatch(git_cmd + 'pull -r upstream master',
+                          output='stderr')
+            try:
+                self.dispatch(git_cmd + 'stash show',
+                              output=None)
+            except self.exc_class:
+                pass
+            else:
+                try:
+                    self.dispatch(git_cmd + 'stash pop',
+                                  output='stderr')
+                except:
+                    raise self.exc_class('re-applying local changes to new portage tree failed!')
+                    
+            # push result of successful rebase
+            # sync is always started manually from root shell, thus ssh-agent should provide key
+            self.dispatch(git_cmd + 'push origin master',
+                          output='stderr')
+            self.dispatch('emaint sync -A',
+                          output='stderr')
+            # FIXME CACHE_METHOD stuff necessary due to gentoo git repo
+            self.dispatch('CACHE_METHOD="/usr/portage/ parse|ebuild*" eix-update',
+                          output='stderr')
+        
         self.ui.info('Checking for updates...')
         try:
             self.dispatch('{0} {1} {2}'.format(
