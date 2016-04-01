@@ -1,15 +1,12 @@
 apache:x:81:
 audio:x:18:schweizer
-avahi:x:1003:
 bin:x:1:root,bin,daemon
 cdrom:x:19:schweizer
 console:x:17:
 daemon:x:2:root,bin,daemon
 disk:x:6:root,schweizer
-eclipse:x:411:
 floppy:x:11:root
 games:x:35:schweizer
-kmem:x:9:
 lp:x:7:lp,schweizer
 mail:x:12:mail
 man:x:15:man
@@ -40,13 +37,11 @@ wheel:x:10:root,schweizer
 lpadmin:x:106:
 cron:x:16:
 openvpn:x:1006:
-kdm:x:105:
 postmaster:x:103:
 vboxusers:x:102:schweizer
 polkituser:x:101:
 plugdev:x:999:schweizer
 lock:x:998:
-hsqldb:x:997:
 dovecot:x:97:
 dovenull:x:109:
 realtime:x:995:schweizer
@@ -59,3 +54,4 @@ sddm:x:996:
 dhcp:x:993:
 uucp:x:14:uucp
 ldap:x:439:
+syncthing:x:110:
