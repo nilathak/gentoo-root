@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 import collections
-import dbus
 import errno
 import getpass
 import itertools
 import json
 import multiprocessing
 import os
-import psutil
 import pylon.base as base
 import pylon.gentoo.job as job
 import pylon.gentoo.ui as ui
@@ -73,7 +71,7 @@ class admin(base.base):
 
         # process file list in chunks to avoid: Argument list is too long
         for chunk in self.chunk(1000, media_files):
-            out = self.dispatch('exiftool -j "{0}"'.format('" "'.join(chunk)),
+            out = self.dispatch('/usr/bin/exiftool -j "{0}"'.format('" "'.join(chunk)),
                                 output=None).stdout
             for file_dict in json.loads(os.linesep.join(out)):
                 filetype = file_dict['FileType']
@@ -118,7 +116,7 @@ class admin(base.base):
                                        output=None, passive=True).stdout[0]
             
                 # map device to first mountpoint
-                out = self.dispatch('cat /proc/mounts | grep ' + device,
+                out = self.dispatch('/bin/cat /proc/mounts | /bin/grep ' + device,
                                     output=None, passive=True).stdout[0]
                 dev,mp,*rest = out.split(' ')
 
@@ -130,10 +128,10 @@ class admin(base.base):
             # Even in 4.3 kernels, you can still get in places where balance won't work (no place left, until you run a -m0 one first)
             for percent in self.unique_logspace(10, 77):
                 self.ui.info('Balancing metadata + data chunks with {1}% usage for {0}...'.format(label, percent))
-                self.dispatch('nice -10 /sbin/btrfs balance start -musage={0} -dusage={0} {1}'.format(percent, mp))
+                self.dispatch('/usr/bin/nice -10 /sbin/btrfs balance start -musage={0} -dusage={0} {1}'.format(percent, mp))
             
             self.ui.info('Scrubbing {0}...'.format(label))
-            self.dispatch('nice -10 /sbin/btrfs scrub start -Bd ' + mp)
+            self.dispatch('/usr/bin/nice -10 /sbin/btrfs scrub start -Bd ' + mp)
             
             self.ui.info('Final usage stats for {0}...'.format(label))
             self.dispatch('/sbin/btrfs fi usage ' + mp,
@@ -685,13 +683,13 @@ class admin(base.base):
             excl_paths = filter(lambda x: not re.search(combined_regex, x), abs_paths)
             quoted_paths = ['"' + path + '"' for path in excl_paths]
             if quoted_paths:
-                out = self.dispatch('exiftool -Orientation {0}'.format(' '.join(quoted_paths)),
+                out = self.dispatch('/usr/bin/exiftool -Orientation {0}'.format(' '.join(quoted_paths)),
                                     output=None).stdout
                 orientation_tags = out[1::2]
                 metadata.update(zip(excl_paths, orientation_tags))
         print(metadata)
             #while(chunks(excl_paths, 10)):
-            #    out = self.dispatch('exiftool -Orientation {0}'.format(' '.join(excl_paths)),
+            #    out = self.dispatch('/usr/bin/exiftool -Orientation {0}'.format(' '.join(excl_paths)),
             #                        output=None).stdout
             #        if len()out:
             #            self.ui.warning('No orientation flag: {0}'.format(path))
@@ -701,10 +699,10 @@ class admin(base.base):
             #for d in dirs:
             #    dir_from_album_root = os.path.join(root, d).replace(walk, '').strip('/')
             #    dir_wo_metachars = dir_from_album_root.replace('/', '_').replace(' ', '_')
-            #    self.dispatch('exiftool -q -P "-FileName<CreateDate" -d "{0}_%%Y-%%m-%%d_%%H-%%M-%%S%%%%-c.%%%%e" "{1}"'.format(dir_wo_metachars, os.path.join(root, d)))
+            #    self.dispatch('/usr/bin/exiftool -q -P "-FileName<CreateDate" -d "{0}_%%Y-%%m-%%d_%%H-%%M-%%S%%%%-c.%%%%e" "{1}"'.format(dir_wo_metachars, os.path.join(root, d)))
             ## check for missing CreateDate tag
             #for f in files:
-            #    if len(self.dispatch('exiftool -CreateDate "{0}"'.format(os.path.join(root, f)),
+            #    if len(self.dispatch('/usr/bin/exiftool -CreateDate "{0}"'.format(os.path.join(root, f)),
             #                         None).stdout) == 0:
             #        self.ui.warning('Missing CreateDate tag for: ' + os.path.join(root, f))
 
@@ -773,11 +771,11 @@ class admin(base.base):
 
         self.ui.info('Checking for inconsistent passwd/group files (fix with pwck & grpck)...')
         try:
-            self.dispatch('pwck -qr')
+            self.dispatch('/usr/sbin/pwck -qr')
         except self.exc_class:
             pass
         try:
-            self.dispatch('grpck -qr')
+            self.dispatch('/usr/sbin/grpck -qr')
         except self.exc_class:
             pass
                 
@@ -829,19 +827,19 @@ class admin(base.base):
 
         self.ui.info('Checking for potential vulnerabilities...')
         try:
-            self.dispatch('glsa-check -ntv all')
+            self.dispatch('/usr/bin/glsa-check -ntv all')
         except self.exc_class:
             pass
          
         self.ui.info('Performing useful emaint commands...')
         try:
-            self.dispatch('emaint -c all')
+            self.dispatch('/usr/sbin/emaint -c all')
         except self.exc_class:
             pass
          
         self.ui.info('Checking for obsolete package.* file entries...')
         try:
-            self.dispatch('eix-test-obsolete brief')
+            self.dispatch('/usr/bin/eix-test-obsolete brief')
         except self.exc_class:
             pass
          
@@ -856,10 +854,6 @@ class admin(base.base):
         # - rebasing host with remote master ensures a minimal diffset ("superimposing" files are auto-removed if no longer needed)
         # - avoid host branches on github, since host branches tend to include security-sensitive files
 
-        host_branches = [
-            'diablo',
-            'belial',
-        ]
         repos = [
             '/',
             # enables quick & dirty cruft development with emacs
@@ -870,14 +864,13 @@ class admin(base.base):
 
             if self.ui.args.rebase:
                 self.ui.info('Rebasing repo at {0}...'.format(repo))
-                git_cmd = 'cd ' + repo + ' && git '
-
+                git_cmd = 'cd ' + repo + ' && /usr/bin/git '
                 self.dispatch(git_cmd + 'stash',
                               output='stderr')
                 self.dispatch(git_cmd + 'pull -r',
                               output='both')
                 try:
-                    self.dispatch(git_cmd + 'stash show',
+                    self.dispatch(git_cmd + '--no-pager stash show',
                                   output=None)
                 except self.exc_class:
                     pass
@@ -890,7 +883,7 @@ class admin(base.base):
 
                 # host branch existing?
                 try:
-                    self.dispatch(git_cmd + 'branch | grep ' + self.ui.hostname,
+                    self.dispatch(git_cmd + 'branch | /bin/grep ' + self.ui.hostname,
                                   output=None, passive=True)
                 except self.exc_class:
                     host_files = list()
@@ -927,7 +920,7 @@ class admin(base.base):
 
                     # export master changes to avoid checking out master branch instead of host branch
                     if host_files:
-                        url = self.dispatch(git_cmd + 'config --get remote.upstream.url',
+                        url = self.dispatch(git_cmd + 'config --get remote.origin_https.url',
                                             output=None, passive=True).stdout[0]
                         clone_path = '/tmp/' + os.path.basename(url)
                         self.ui.info('Preparing temporary master repo for {0} into {1}...'.format(repo, clone_path))
@@ -937,7 +930,7 @@ class admin(base.base):
                         except self.exc_class:
                             pass
                         for f in master_files:
-                            self.dispatch('cp {0} {1}'.format(os.path.join(repo, f),
+                            self.dispatch('/bin/cp {0} {1}'.format(os.path.join(repo, f),
                                                               os.path.join(clone_path, f)),
                                           output='stderr')
 
@@ -960,18 +953,6 @@ class admin(base.base):
         for mp in ssd_mount_points[self.ui.hostname]:
             self.dispatch('/sbin/fstrim -v ' + mp)
 
-    def admin_dpms_sleep(self):
-        # ====================================================================
-        'force monitor into DPMS sleep'
-        #FIXME
-        # - delete kde notifications setting afterwards
-        # - start from kde lock notification => two idle time measurements?
-        
-        #while True:
-        #    time.sleep(10)
-        #    self.dispatch('xset dpms force off')
-        #    - if not locked => break
-            
     @ui.log_exec_time
     def admin_kernel(self):
         # ====================================================================
@@ -980,49 +961,49 @@ class admin(base.base):
         key_mp = '/tmp/keyring'
         key_image = '/mnt/work/usb_boot'
         
-        self.dispatch('eselect kernel list', passive=True)
+        self.dispatch('/usr/bin/eselect kernel list', passive=True)
         selection = input('which kernel?')
-        self.dispatch('eselect kernel set ' + selection)
+        self.dispatch('/usr/bin/eselect kernel set ' + selection)
         os.chdir('/usr/src/linux')
-        self.dispatch('make -j' + str(multiprocessing.cpu_count()*2-1), output='nopipes')
+        self.dispatch('/usr/bin/make -j' + str(multiprocessing.cpu_count()*2-1), output='nopipes')
 
         # install kernel to USB keyrings
         try:
-            self.dispatch('mkdir ' + key_mp, output='stdout')
+            self.dispatch('/bin/mkdir ' + key_mp, output='stdout')
         except self.exc_class:
             pass
         try:
-            self.dispatch('rm -rf /boot; ln -s {0}/{1} /boot'.format(key_mp, self.ui.hostname), output='stdout')
+            self.dispatch('/bin/rm -rf /boot; /bin/ln -s {0}/{1} /boot'.format(key_mp, self.ui.hostname), output='stdout')
         except self.exc_class:
             pass
 
-        part = self.dispatch('findfs LABEL=KEYRING', passive=True, output=None).stdout[0]
+        part = self.dispatch('/sbin/findfs LABEL=KEYRING', passive=True, output=None).stdout[0]
         dev = part[:-1]
 
         # umount KDE mounts as well, since parallel mounts might lead to ro remounting 
         try:
             while True:
-                self.dispatch('umount ' + part, passive=True, output='stdout')
+                self.dispatch('/bin/umount ' + part, passive=True, output='stdout')
         except self.exc_class:
             pass
 
         self.ui.info('perform automatic offline fsck')
         try:
-            self.dispatch('fsck.vfat -a ' + part)
+            self.dispatch('/usr/sbin/fsck.vfat -a ' + part)
         except self.exc_class:
             pass
 
-        self.dispatch('mount {0} {1}'.format(part, key_mp))
-        self.dispatch('make install')
+        self.dispatch('/bin/mount {0} {1}'.format(part, key_mp))
+        self.dispatch('/usr/bin/make install')
 
         self.ui.info('install grub modules + embed into boot sector')
-        self.dispatch('grub-install {0} --boot-directory={1}/boot'.format(dev, key_mp))
+        self.dispatch('/usr/sbin/grub-install {0} --boot-directory={1}/boot'.format(dev, key_mp))
         if not self.ui.args.no_backup:
             self.ui.info('rsync new grub installation to keyring backup')
-            self.dispatch('rsync -a {0}/boot {1} --exclude="/boot/grub/grub.cfg"'.format(key_mp, key_image),
+            self.dispatch('/usr/bin/rsync -a {0}/boot {1} --exclude="/boot/grub/grub.cfg"'.format(key_mp, key_image),
                           output='both')
         self.ui.info('install host-specific grub.cfg (grub detects underlying device and correctly uses absolute paths to kernel images)')
-        self.dispatch('grub-mkconfig -o /boot/grub/grub.cfg')
+        self.dispatch('/usr/sbin/grub-mkconfig -o /boot/grub/grub.cfg')
 
         if not self.ui.args.no_backup:
             self.ui.info('rsync keyring backup to actual device')
@@ -1035,7 +1016,6 @@ class admin(base.base):
             ]
             rsync_exclude_small = [
                 '--exclude="/*.iso"',
-                '--exclude="/sources"',
             ]
             if self.ui.args.small:
                 rsync_exclude.extend(rsync_exclude_small)
@@ -1043,27 +1023,28 @@ class admin(base.base):
             if not self.ui.args.force:
                 self.ui.info('Use -f to apply sync!')
                 dry_run = 'n'
-            self.dispatch('rsync -av' + dry_run + ' --modify-window 1 --no-perms --no-owner --no-group --inplace --delete {0}/ {1} {2}'.format(key_image,
+            self.dispatch('/usr/bin/rsync -av' + dry_run + ' --modify-window 1 --no-perms --no-owner --no-group --inplace --delete {0}/ {1} {2}'.format(key_image,
                                                                                                                                               key_mp,
                                                                                                                                               ' '.join(rsync_exclude)),
                           output='both')
 
         try:
             while True:
-                self.dispatch('umount ' + part, passive=True, output='stdout')
+                self.dispatch('/bin/umount ' + part, passive=True, output='stdout')
         except self.exc_class:
             pass
 
-        self.dispatch('rm /boot')
+        self.dispatch('/bin/rm /boot')
         self.ui.info('Rebuild kernel modules')
-        self.dispatch('make modules_install')
-        self.dispatch('emerge @module-rebuild', output='nopipes')
+        self.dispatch('/usr/bin/make modules_install')
+        self.dispatch('/usr/bin/emerge @module-rebuild', output='nopipes')
 
     def admin_luks_container(self):
         # ====================================================================
         'access luks container via udisks2'
-        # FIXME
-        # - use usb keyfile + simple pwd, or complex pwd from keepass db
+
+        # import supported on diablo only
+        import dbus
         
         bus = dbus.SystemBus()
         udisks2_manager_obj = bus.get_object('org.freedesktop.UDisks2', '/org/freedesktop/UDisks2/Manager')
@@ -1077,9 +1058,17 @@ class admin(base.base):
                 decrypt_obj_path = loop.Unlock(getpass.getpass(), {})
                 decrypt_obj = bus.get_object('org.freedesktop.UDisks2', decrypt_obj_path)
                 try:
+                    decrypt_uuid = decrypt_obj.Get('org.freedesktop.UDisks2.Block', 'IdUUID', dbus_interface='org.freedesktop.DBus.Properties')
+                    decrypt_device = self.dispatch('/sbin/findfs UUID=' + decrypt_uuid,
+                                                   output=None, passive=True).stdout[0]
+                    try:
+                        self.dispatch('/sbin/fsck.ext3 -p ' + decrypt_device, output='both')
+                    except Exception as e:
+                        print(e)
+                        time.sleep(10)
                     decrypt = dbus.Interface(decrypt_obj, 'org.freedesktop.UDisks2.Filesystem')
                     mount_path = decrypt.Mount({})
-                    self.dispatch('dolphin ' + mount_path, output=None)
+                    self.dispatch('/usr/bin/dolphin ' + mount_path, output=None)
                     decrypt.Unmount({})
                 finally:
                     loop.Lock({})
@@ -1093,11 +1082,19 @@ class admin(base.base):
         # FIXME
         # - regenerate WPA passphrase by generating an OTP from google-authenticator PAM module
         # - generate matching OTP via app on my own phone, and show it to guests for time-limited login
+        # - optional: WIFI-config barcodes cannot be created directly from google-authenticator, code would need to be pasted into
+        #   some kind of barcode generator app first. in addition on-the-fly config by taking QR photo works only on Android.
         pass
 
     def admin_spindown(self):
         # ====================================================================
         'force large HDD into standby mode'
+
+        # import supported on diablo only
+        import psutil
+        
+        # FIXME still seeing: <class 'IndexError'> list index out of range
+        self.ui.args.traceback = True
 
         luks_uuid = 'd6464602-14fc-485c-befc-d22ba8e4d533'
         btrfs_label = 'pool'
@@ -1108,7 +1105,7 @@ class admin(base.base):
                                                 output=None, passive=True).stdout[0])
         btrfs_device = self.dispatch('/sbin/findfs LABEL=' + btrfs_label,
                                      output=None, passive=True).stdout[0]
-        ignore_dev,mp,*ignore_rest = self.dispatch('cat /proc/mounts | grep ' + btrfs_device,
+        ignore_dev,mp,*ignore_rest = self.dispatch('/bin/cat /proc/mounts | /bin/grep ' + btrfs_device,
                                                    output=None, passive=True).stdout[0].split(' ')
         
         # script will be run via cron.hourly
@@ -1123,10 +1120,10 @@ class admin(base.base):
             io_ops_2nd = str(psutil.disk_io_counters(True)[device])
             if io_ops_1st == io_ops_2nd:
                 self.ui.debug('Ensure filesystem buffers are flushed')
-                self.dispatch('btrfs filesystem sync ' + mp,
+                self.dispatch('/sbin/btrfs filesystem sync ' + mp,
                               output=None)
                 self.ui.debug('Spinning down...')
-                self.dispatch('hdparm -y /dev/' + device,
+                self.dispatch('/sbin/hdparm -y /dev/' + device,
                               output=None)
 
     def admin_update(self):
@@ -1135,14 +1132,14 @@ class admin(base.base):
 
         if self.ui.args.sync:
             self.ui.info('Rebasing my gentoo mirror to upstream...')
-            git_cmd = 'cd /usr/portage && git '
+            git_cmd = 'cd /usr/portage && /usr/bin/git '
 
             self.dispatch(git_cmd + 'stash',
                           output='stderr')
             self.dispatch(git_cmd + 'pull -r upstream master',
                           output='stderr')
             try:
-                self.dispatch(git_cmd + 'stash show',
+                self.dispatch(git_cmd + '--no-pager stash show',
                               output=None)
             except self.exc_class:
                 pass
@@ -1153,20 +1150,21 @@ class admin(base.base):
                 except:
                     raise self.exc_class('re-applying local changes to new portage tree failed!')
                     
-            # push result of successful rebase
+            # automatically push result of successful rebase only on diablo (origin remote uses ssh protocol)
             # sync is always started manually from root shell, thus ssh-agent should provide key
-            self.dispatch(git_cmd + 'push origin master',
-                          output='stderr')
-            self.dispatch('emaint sync -A',
+            if self.ui.hostname == 'diablo':
+                self.dispatch(git_cmd + 'push origin master',
+                              output='stderr')
+            self.dispatch('/usr/sbin/emaint sync -A',
                           output='stderr')
             # FIXME CACHE_METHOD stuff necessary due to gentoo git repo
-            self.dispatch('CACHE_METHOD="/usr/portage/ parse|ebuild*" eix-update',
+            self.dispatch('CACHE_METHOD="/usr/portage/ parse|ebuild*" /usr/bin/eix-update',
                           output='stderr')
         
         self.ui.info('Checking for updates...')
         try:
             self.dispatch('{0} {1} {2}'.format(
-                'emerge --nospinner --autounmask-keep-masks --keep-going --verbose-conflict --with-bdeps=y -uDNv world',
+                '/usr/bin/emerge --nospinner --autounmask-keep-masks --keep-going --verbose-conflict --with-bdeps=y -uDNv world',
                 '-p' if not self.ui.args.force else '',
                 '-t' if self.ui.args.tree else ''),
                           output='nopipes')
@@ -1175,17 +1173,17 @@ class admin(base.base):
         
         self.ui.info('Checking for obsolete dependencies...')
         self.dispatch('{0} {1}'.format(
-            'emerge --depclean',
+            '/usr/bin/emerge --depclean',
             '-p' if not self.ui.args.force else ''),
                       output='nopipes')
 
         if self.ui.args.force:
             self.ui.info('Rebuilding broken lib dependencies...')
-            self.dispatch('emerge @preserved-rebuild',
+            self.dispatch('/usr/bin/emerge @preserved-rebuild',
                           output='nopipes')
 
             self.ui.info('Checking for obsolete distfiles...')
-            self.dispatch('eclean -Cd distfiles -f',
+            self.dispatch('/usr/bin/eclean -Cd distfiles -f',
                           output='nopipes')
 
     def admin_wrap(self):
@@ -1242,14 +1240,14 @@ class admin(base.base):
         # first instance does mounting
         makedirs_if_missing(local)
         try:
-            self.dispatch('mount | grep ' + local,
+            self.dispatch('/bin/mount | /bin/grep ' + local,
                           output=None, passive=True)
         except self.exc_class:
-            self.dispatch('mount ' + image + ' ' + local,
+            self.dispatch('/bin/mount ' + image + ' ' + local,
                           output='stderr')
             for (src, dest) in bind_map:
                 makedirs_if_missing(src)
-                self.dispatch('mount -o bind {0} {1}'.format(src, os.path.join(local, dest.strip('/'))),
+                self.dispatch('/bin/mount -o bind {0} {1}'.format(src, os.path.join(local, dest.strip('/'))),
                               output='stderr')
      
         self.ui.info('Entering the chroot...')
@@ -1261,40 +1259,40 @@ class admin(base.base):
 
         try:
             # chname for chroot hostname modification needs CONFIG_UTS_NS=y
-            self.dispatch("env -i HOME=$HOME $HOSTNAME={0} TERM=$TERM chname {0} linux32 chroot {1} /bin/bash -l{2}".format(device, local, opts),
+            self.dispatch('/usr/bin/env -i HOME=$HOME $HOSTNAME={0} TERM=$TERM /usr/bin/chname {0} /usr/bin/linux32 /usr/bin/chroot {1} /bin/bash -l{2}'.format(device, local, opts),
                           output='nopipes')
         except self.exc_class:
             self.ui.warning('chroot shell exited with error status (last cmd failed?)')
         self.ui.info('Leaving the chroot...')
      
         # last instance does umounting
-        if len([x for x in self.dispatch('ps aux | grep admin.py',
+        if len([x for x in self.dispatch('/bin/ps aux | /bin/grep admin.py',
                                          output=None,
                                          passive=True).stdout if ' wrap' in x]) == 1:
             for (src, dest) in reversed(bind_map):
-                self.dispatch('umount ' + os.path.join(local, dest.strip('/')),
+                self.dispatch('/bin/umount ' + os.path.join(local, dest.strip('/')),
                               output='stderr')
      
             try:
                 if self.ui.args.sync:
                     self.ui.info('Syncing changes to device...')
                     try:
-                        self.dispatch('ping ' + device + ' -c 1',
+                        self.dispatch('/bin/ping ' + device + ' -c 1',
                                       output='stderr')
                         try:
-                            self.dispatch('rsync -aHv --delete ' + local + '/ ' + device + ':/ ' + ' '.join(rsync_exclude),
+                            self.dispatch('/usr/bin/rsync -aHv --delete ' + local + '/ ' + device + ':/ ' + ' '.join(rsync_exclude),
                                           output='both')
                             self.ui.info('Updating grub in native environment...')
-                            self.dispatch('ssh {0} grub-install /dev/sda'.format(device),
+                            self.dispatch('/usr/bin/ssh {0} /usr/sbin/grub-install /dev/sda'.format(device),
                                           output='both')
-                            self.dispatch('ssh {0} grub-mkconfig -o /boot/grub/grub.cfg'.format(device),
+                            self.dispatch('/usr/bin/ssh {0} /usr/sbin/grub-mkconfig -o /boot/grub/grub.cfg'.format(device),
                                           output='both')
                         except self.exc_class:
                             self.ui.warning('Something went wrong during the rsync process...')
                     except self.exc_class:
                         self.ui.warning('Device is offline, changes are NOT synced...')
             finally:
-                self.dispatch('sleep 0.2 && umount ' + local,
+                self.dispatch('/usr/bin/sleep 0.2 && /bin/umount ' + local,
                               output='stderr')
         else:
             self.ui.warning('No other device chroot environment should be open while doing rsync, close them...')
