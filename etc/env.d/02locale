@@ -1,4 +1,10 @@
 # Configuration file for eselect
 # This file has been automatically generated.
-LC_ALL="en_US.utf8"
 LANG="en_US.utf8"
+LC_COLLATE="de_AT.utf8"
+LC_CTYPE="de_AT.utf8"
+LC_MEASUREMENT="de_AT.utf8"
+LC_MONETARY="de_AT.utf8"
+LC_NUMERIC="de_AT.utf8"
+LC_PAPER="de_AT.utf8"
+LC_TIME="de_AT.utf8"
