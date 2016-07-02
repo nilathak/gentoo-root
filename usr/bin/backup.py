@@ -36,7 +36,7 @@ manual_tasks = {
         # <mount via KDE>
         # admin.py check_btrfs -o extpool --mail && backup.py manual --mail
         # <unmount via KDE>
-        # hdparm -y `findfs UUID=<extpool>`
+        # hdparm -y `findfs UUID=afd6243b-2580-4509-8ac2-b8c5702d6212`
         
         ('/mnt/work/backup/cache/diablo',
          '/run/media/schweizer/extpool',
