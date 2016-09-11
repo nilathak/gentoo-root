@@ -88,7 +88,7 @@ class backup(base.base):
                 setattr(self, engine, getattr(__import__('backup_' + engine), 'backup_' + engine)(owner=self))
         getattr(self, self.__class__.__name__ + '_' + self.ui.args.op)()
 
-    def do(self, src_path, dest_path, opts, cmd):
+    def do(self, src_path, dest_path, opts, command):
 
         # lock backup dest to prevent overlapping backup
         lock_path = '/tmp/' + self.__class__.__name__ + hashlib.md5(src_path.encode('utf-8') + dest_path.encode('utf-8')).hexdigest()
@@ -99,7 +99,7 @@ class backup(base.base):
 
         # remove lock dir in every case
         try:
-            cmd(src_path, dest_path, opts)
+            command(src_path, dest_path, opts)
         finally:
             os.rmdir(lock_path)
 
@@ -112,9 +112,12 @@ class backup(base.base):
         'perform host-specific automatic tasks'
         for (src, dest, engine, opts) in auto_tasks[self.ui.hostname]:
             if (self.selected(engine, src)):
-                self.dispatch(lambda src=src,dest=dest,opts=opts,engine=engine:
-                              self.do(src, dest, opts, getattr(self, engine).do),
-                              blocking=False)
+                self.dispatch(self.do,
+                              blocking=False,
+                              src_path=src,
+                              dest_path=dest,
+                              opts=opts,
+                              command=getattr(self, engine).do)
         self.join()
 
     @ui.log_exec_time
@@ -122,9 +125,12 @@ class backup(base.base):
         'perform host-specific manual tasks'
         for (src, dest, engine, opts) in manual_tasks[self.ui.hostname]:
             if (self.selected(engine, src)):
-                self.dispatch(lambda src=src,dest=dest,opts=opts,engine=engine:
-                              self.do(src, dest, opts, getattr(self, engine).do),
-                              blocking=False)
+                self.dispatch(self.do,
+                              blocking=False,
+                              src_path=src,
+                              dest_path=dest,
+                              opts=opts,
+                              command=getattr(self, engine).do)
         self.join()
 
     @ui.log_exec_time
