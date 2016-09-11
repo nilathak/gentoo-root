@@ -11,6 +11,7 @@ import pylon.gentoo.job as job
 import pylon.gentoo.ui as ui
 import re
 import stat
+import sys
 import time
 
 class ui(ui.ui):
@@ -825,6 +826,10 @@ class admin(base.base):
         # ====================================================================
         'perform portage maintenance'
 
+        # FIXME
+        # check for vanished versions
+        # EIX_LIMIT=0 eix -I  | grep '^\[' | sort | grep -v 'I'
+        
         self.ui.info('Checking for potential vulnerabilities...')
         try:
             self.dispatch('/usr/bin/glsa-check -ntv all')
@@ -954,6 +959,30 @@ class admin(base.base):
             self.dispatch('/sbin/fstrim -v ' + mp)
 
     @ui.log_exec_time
+    def admin_games(self):
+        # ====================================================================
+        'common games loading scripts'
+        # FIXME
+
+        wine_cmd_common = '/usr/bin/wine'
+        wine_cmd_virtual_desktop = 'explorer /desktop=name'
+
+        if self.ui.args.options == 'machinarium':
+            resolution = '1024x768'
+            game_cmd = '/mnt/games/install/Machinarium/machinarium.exe'
+        elif self.ui.args.options == 'simtower':
+            # FIXME alsasound volume adjustment before start
+            resolution = '1024x768'
+            game_cmd = '/mnt/games/emulators/wine/SIMTOWER/SIMTOWER.EXE'
+        else:
+            raise self.exc_class('unknown game')
+
+        wine_cmd = ' '.join([wine_cmd_common, wine_cmd_virtual_desktop + ',' + resolution, game_cmd])
+        new_xserver = ' '.join(['xinit', wine_cmd, '-- :1 -config xorg.wine.' + resolution + '.conf vt8'])
+        
+        self.dispatch(new_xserver)
+        
+    @ui.log_exec_time
     def admin_kernel(self):
         # ====================================================================
         'scripting stuff to build kernels'
@@ -1000,7 +1029,7 @@ class admin(base.base):
         self.dispatch('/usr/sbin/grub-install {0} --boot-directory={1}/boot'.format(dev, key_mp))
         if not self.ui.args.no_backup:
             self.ui.info('rsync new grub installation to keyring backup')
-            self.dispatch('/usr/bin/rsync -a {0}/boot {1} --exclude="/boot/grub/grub.cfg"'.format(key_mp, key_image),
+            self.dispatch('/usr/bin/rsync -a {0}/boot/grub/ {1}/boot/grub/ --exclude="grub.cfg"'.format(key_mp, key_image),
                           output='both')
         self.ui.info('install host-specific grub.cfg (grub detects underlying device and correctly uses absolute paths to kernel images)')
         self.dispatch('/usr/sbin/grub-mkconfig -o /boot/grub/grub.cfg')
@@ -1043,35 +1072,51 @@ class admin(base.base):
         # ====================================================================
         'access luks container via udisks2'
 
+        from PyQt5.QtWidgets import QApplication, QInputDialog, QLineEdit
+        # application needed before any widget creation
+        app = QApplication(sys.argv)
+
         # import supported on diablo only
         import dbus
         
         bus = dbus.SystemBus()
         udisks2_manager_obj = bus.get_object('org.freedesktop.UDisks2', '/org/freedesktop/UDisks2/Manager')
-        
+
         with open('/mnt/work/luks/container', 'r+b') as container:
             udisks2_manager = dbus.Interface(udisks2_manager_obj, 'org.freedesktop.UDisks2.Manager')
             loop_obj_path = udisks2_manager.LoopSetup(container.fileno(), {})
-            loop_obj = bus.get_object('org.freedesktop.UDisks2', loop_obj_path)
             try:
+                loop_obj = bus.get_object('org.freedesktop.UDisks2', loop_obj_path)
                 loop = dbus.Interface(loop_obj, 'org.freedesktop.UDisks2.Encrypted')
-                decrypt_obj_path = loop.Unlock(getpass.getpass(), {})
-                decrypt_obj = bus.get_object('org.freedesktop.UDisks2', decrypt_obj_path)
-                try:
-                    decrypt_uuid = decrypt_obj.Get('org.freedesktop.UDisks2.Block', 'IdUUID', dbus_interface='org.freedesktop.DBus.Properties')
-                    decrypt_device = self.dispatch('/sbin/findfs UUID=' + decrypt_uuid,
-                                                   output=None, passive=True).stdout[0]
+                retry = True
+                valid = False
+
+                while(retry):
+                    passphrase, retry = QInputDialog.getText(None, 'Decryption', 'Passphrase', QLineEdit.Password)
+                    if retry:
+                        try:
+                            decrypt_obj_path = loop.Unlock(passphrase, {})
+                            retry = False
+                            valid = True
+                        except dbus.exceptions.DBusException:
+                            pass
+                if valid:
                     try:
-                        self.dispatch('/sbin/fsck.ext3 -p ' + decrypt_device, output='both')
-                    except Exception as e:
-                        print(e)
-                        time.sleep(10)
-                    decrypt = dbus.Interface(decrypt_obj, 'org.freedesktop.UDisks2.Filesystem')
-                    mount_path = decrypt.Mount({})
-                    self.dispatch('/usr/bin/dolphin ' + mount_path, output=None)
-                    decrypt.Unmount({})
-                finally:
-                    loop.Lock({})
+                        decrypt_obj = bus.get_object('org.freedesktop.UDisks2', decrypt_obj_path)
+                        decrypt_uuid = decrypt_obj.Get('org.freedesktop.UDisks2.Block', 'IdUUID', dbus_interface='org.freedesktop.DBus.Properties')
+                        decrypt_device = self.dispatch('/sbin/findfs UUID=' + decrypt_uuid,
+                                                       output=None, passive=True).stdout[0]
+                        try:
+                            self.dispatch('/sbin/fsck.ext3 -p ' + decrypt_device, output=None)
+                        except Exception as e:
+                            print(e)
+                            time.sleep(10)
+                        decrypt = dbus.Interface(decrypt_obj, 'org.freedesktop.UDisks2.Filesystem')
+                        mount_path = decrypt.Mount({})
+                        self.dispatch('/usr/bin/dolphin ' + mount_path, output=None)
+                        decrypt.Unmount({})
+                    finally:
+                        loop.Lock({})
             finally:
                 loop = dbus.Interface(loop_obj, 'org.freedesktop.UDisks2.Loop')
                 loop.Delete({})
@@ -1093,9 +1138,6 @@ class admin(base.base):
         # import supported on diablo only
         import psutil
         
-        # FIXME still seeing: <class 'IndexError'> list index out of range
-        self.ui.args.traceback = True
-
         luks_uuid = 'd6464602-14fc-485c-befc-d22ba8e4d533'
         btrfs_label = 'pool'
         frequency_per_hour = 4
@@ -1157,7 +1199,7 @@ class admin(base.base):
                               output='stderr')
             self.dispatch('/usr/sbin/emaint sync -A',
                           output='stderr')
-            # FIXME CACHE_METHOD stuff necessary due to gentoo git repo
+            # FIXME override metadata-md5-or-flat cache method for gentoo mirror, to include local overlay ebuilds
             self.dispatch('CACHE_METHOD="/usr/portage/ parse|ebuild*" /usr/bin/eix-update',
                           output='stderr')
         
@@ -1182,19 +1224,16 @@ class admin(base.base):
             self.dispatch('/usr/bin/emerge @preserved-rebuild',
                           output='nopipes')
 
-            self.ui.info('Checking for obsolete distfiles...')
-            self.dispatch('/usr/bin/eclean -Cd distfiles -f',
-                          output='nopipes')
-
     def admin_wrap(self):
         # ====================================================================
         'mount wrap image for local administration'
 
         # FIXME
-        #Loading Linux 4.3.3-gentoo ...
-        #CPU: vendor_id 'Geode by NSC' unknown, using generic init.
-        #CPU: Your system may be unstable.
-        #i8042: No controller found
+        # Loading Linux 4.6.2-gentoo ...
+        # CPU: vendor_id 'Geode by NSC' unknown, using generic init.
+        # CPU: Your system may be unstable.
+        # dmi: Firmware registration failed.
+        # ...
         #  * Setting console font [lat9w-16] ...
         #  [ ok ]
         # getfont: KDFONTOP: No space left on device
