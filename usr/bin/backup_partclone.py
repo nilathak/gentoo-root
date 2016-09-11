@@ -23,7 +23,7 @@ class backup_partclone(base.base):
         partition = self.dispatch('findfs UUID={0}'.format(src_path), passive=True, output=None).stdout[0]
     
         self.ui.info('Saving {0} to {1}...'.format(partition, dest_path))
-        self.dispatch('partclone.{0} -c -s {1} -O {2}'.format(opts, partition, dest_path),
+        self.dispatch('partclone.{0} -L /tmp/partclone.log -c -s {1} -O {2}'.format(opts, partition, dest_path),
                       output='both')
         self.ui.info('Saved {0} to {1}'.format(partition, dest_path))
         
