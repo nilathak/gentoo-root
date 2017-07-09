@@ -3,7 +3,7 @@ import pylon.base as base
 class backup_unison(base.base):
     'implement semi-automated unison synchronization'
 
-    def do(self, src_path, dest_path, opts=''):
+    def do(self, task, src_path, dest_path, opts=''):
         self.ui.info('Synchronizing {0} to {1}...'.format(src_path, dest_path))
         try:
             self.dispatch('eselect unison update && unison ' +
@@ -32,11 +32,11 @@ class backup_unison(base.base):
             else:
                 raise e
 
-    def info(self, src_path, dest_path, opts=''):
+    def info(self, task, src_path, dest_path, opts=''):
         # unison itself does not allow to see differences all at once via the
         # console interface. if a sync is not successful, two backups
         # are available at all times, so trust unison...
         pass
 
-    def modify(self, src_path, dest_path, opts=''):
+    def modify(self, task, src_path, dest_path, opts=''):
         pass

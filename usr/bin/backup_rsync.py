@@ -3,7 +3,7 @@ import pylon.base as base
 class backup_rsync(base.base):
     'implement simple rsync copy backup module.'
 
-    def do(self, src_path, dest_path, opts=''):
+    def do(self, task, src_path, dest_path, opts=''):
         self.ui.info('Saving {0} to {1}...'.format(src_path, dest_path))
         self.dispatch('rsync ' +
                       # preserve almost everything
@@ -36,7 +36,7 @@ class backup_rsync(base.base):
                       output='both')
         self.ui.info('Saved {0} to {1}'.format(src_path, dest_path))
 
-    def info(self, src_path, dest_path, opts=''):
+    def info(self, task, src_path, dest_path, opts=''):
         self.ui.info('Differences {0} <-> {1}...'.format(src_path, dest_path))
         self.dispatch('rsync ' +
                       # preserve almost everything
@@ -71,5 +71,5 @@ class backup_rsync(base.base):
                       src_path + ' ' + dest_path,
                       output='both')
 
-    def modify(self, src_path, dest_path, opts=''):
+    def modify(self, task, src_path, dest_path, opts=''):
         pass

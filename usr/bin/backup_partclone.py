@@ -17,7 +17,7 @@ class backup_partclone(base.base):
 
     __doc__ = sys.modules[__name__].__doc__
     
-    def do(self, src_path, dest_path, opts=''):
+    def do(self, task, src_path, dest_path, opts=''):
 
         # - determine partition from UUID in src_path
         partition = self.dispatch('findfs UUID={0}'.format(src_path), passive=True, output=None).stdout[0]
@@ -27,10 +27,10 @@ class backup_partclone(base.base):
                       output='both')
         self.ui.info('Saved {0} to {1}'.format(partition, dest_path))
         
-    def info(self, src_path, dest_path, opts=''):
+    def info(self, task, src_path, dest_path, opts=''):
         self.ui.info('Showing partclone image header for {0}...'.format(dest_path))
         self.dispatch('partclone.info {0}'.format(dest_path),
                       output='both')
 
-    def modify(self, src_path, dest_path, opts=''):
+    def modify(self, task, src_path, dest_path, opts=''):
         pass
