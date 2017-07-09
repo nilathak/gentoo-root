@@ -1,5 +1,6 @@
 [user]
         email = nilathak@users.noreply.github.com
         name = Hannes Schweizer
+	signingkey = 2BAB4EED751A995D
 [push]
 	default = simple
