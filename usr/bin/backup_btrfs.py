@@ -1,43 +1,42 @@
 #!/usr/bin/env python3
 '''
 implement btrfs subvolume snapshot backups based on interval string
-
+  
 NOTES
-- if !newest timedelta slot contains 0 timestamps => nothing
-- if  newest timedelta slot contains 0 timestamps => take snapshot
-- if !oldest timedelta slot contains more than 1 timestamp => keep oldest, delete others
-- if  oldest timedelta slot contains more than 1 timestamp => keep newest, delete others
-- if no timedeltas are specified, all new snapshots from src are cloned to dest, obsolete ones in dest are deleted
-- deleting snapshot will always happen together with creating snapshots, since older deltas are always >= newer deltas 
-- the single snapshot after the oldest timedelta is kept for/replaced after oldest-1 timedelta
-- Taking snapshots of a subvolume is not a recursive process. If a snapshot of a subvolume is created,
-  every subvolume or snapshot that the subvolume already contains is mapped to an empty directory of the
-  same name inside the snapshot (https://en.wikipedia.org/wiki/Btrfs#Subvolumes_and_snapshots)
-- Remote backup with send/receive are faster than simple rsync
-- source snapshot paths must always be specified as absolute paths from root, not path to mount point,
-  or otherwise the automatic extraction of incremental snapshot directory fails
-- determining the sizes of specific snapshots (via quota & qgroup) is usually meaningless. deleting snapshots from within the
-  timedelta grid simply shifts shared data to the neighboring snapshots. reduction in size can only be reached by simply
-  deleting the oldest snapshots (which can easily done manually without any adm_backup operation).
-  it would only make sense for snapshots which show a large "exclusive size" (3rd column in qgroup output), which can be elevated
-  for snapshots containing many large transient files (downloads, caches, ...), but it's generally better to decrease
-  snapshot retention time in this case
-
+ - if !newest timedelta slot contains 0 timestamps => nothing
+ - if  newest timedelta slot contains 0 timestamps => take snapshot
+ - if !oldest timedelta slot contains more than 1 timestamp => keep oldest, delete others
+ - if  oldest timedelta slot contains more than 1 timestamp => keep newest, delete others
+ - if no timedeltas are specified, all new snapshots from src are cloned to dest, obsolete ones in dest are deleted
+ - deleting snapshot will always happen together with creating snapshots, since older deltas are always >= newer deltas 
+ - the single snapshot after the oldest timedelta is kept for/replaced after oldest-1 timedelta
+ - Taking snapshots of a subvolume is not a recursive process. If a snapshot of a subvolume is created,
+   every subvolume or snapshot that the subvolume already contains is mapped to an empty directory of the
+   same name inside the snapshot (https://en.wikipedia.org/wiki/Btrfs#Subvolumes_and_snapshots)
+ - Remote backup with send/receive are faster than simple rsync
+ - source snapshot paths must always be specified as absolute paths from root, not path to mount point,
+   or otherwise the automatic extraction of incremental snapshot directory fails
+  
 FIXME
-- try to stretch timeline, so to avoid deleting many interesting snapshot increments when booting up after a long downtime
-  - if !newest timedelta slot contains 0 timestamps => shift ts_now slightly before next ts found in ts_recv_list
-- implement unittest as __main__ instead of commented code
-  - create dummy subvols on recv side based on timedelta log curve
-    - create holes in log curve (longer downtime)
-  - map different timedelta configs on log curve created on recv side
-    - does td resolution changes work as expected?
-  - interrupt send/receive and verify cleanup is working during next startup (writeable snapshot deleted?)
-- implement info() to get actual disk space of snapshots (using btrfs qgroups)
+ - try to stretch timeline, so to avoid deleting many interesting snapshot increments when booting up after a long downtime
+   - if !newest timedelta slot contains 0 timestamps => shift ts_now slightly before next ts found in ts_recv_list
+ - implement unittest as __main__ instead of commented code
+   - create dummy subvols on recv side based on timedelta log curve
+     - create holes in log curve (longer downtime)
+   - map different timedelta configs on log curve created on recv side
+     - does td resolution changes work as expected?
+   - interrupt send/receive and verify cleanup is working during next startup (writeable snapshot deleted?)
+ - implement info() to get actual disk space of snapshots (using btrfs qgroups)
+   determining the sizes of specific snapshots (via quota & qgroup) is usually meaningless. deleting snapshots from within the
+   timedelta grid simply shifts shared data to the neighboring snapshots. reduction in size can only be reached by simply
+   deleting the oldest snapshots (which can easily done manually without any adm_backup operation).
+   it would only make sense for snapshots which show a large "exclusive size" (3rd column in qgroup output), which can be elevated
+   for snapshots containing many large transient files (downloads, caches, ...), but it's generally better to decrease
+   snapshot retention time in this case
 '''
     
 import datetime
 import glob
-import hashlib
 import os
 import pylon.base as base
 import re
@@ -78,11 +77,15 @@ class backup_btrfs(base.base):
             num = int(re.search('([0-9]*)m', delta_str).group(1))
             for delta in base.base.unique_logspace(num, 12):
                 yield datetime.timedelta(days=delta*30)
-        if 'y' in delta_str:
-            num = int(re.search('([0-9]*)y', delta_str).group(1))
-            for delta in base.base.unique_logspace(num, 1):
-                yield datetime.timedelta(days=delta*365)
                 
+        # largest delta needs to be calibrated
+        if 'y' in delta_str:
+            match = re.search('([0-9]*)y([0-9]*)', delta_str)
+            num = int(match.group(1))
+            year_factor = int(match.group(2))
+            for delta in base.base.unique_logspace(num, 12*year_factor):
+                yield datetime.timedelta(days=delta*30)
+
         # - append delta to max past, to facilitate keeping 1 snapshot after last configured delta
         # - subtract 1 min to avoid datetime overflows in window calculations
         yield self.get_ts_now() - datetime.datetime.min - datetime.timedelta(minutes=1)
@@ -105,9 +108,9 @@ class backup_btrfs(base.base):
             except Exception:
                 pass
            
-    def do(self, src_path, dest_path, opts=''):
+    def do(self, task, src_path, dest_path, opts=''):
         
-        self.ui.info('Saving {0} to {1}...'.format(src_path, dest_path))
+        self.ui.info('Processing {0}...'.format(task))
 
         # check if src is really a btrfs subvolume
         try:
@@ -116,7 +119,7 @@ class backup_btrfs(base.base):
         except self.exc_class:
             raise self.exc_class('source {0} needs to be a valid btrfs subvolume'.format(src_path))
         
-        send_dir, name = os.path.split(src_path)
+        send_dir = os.path.dirname(src_path)
         recv_dir = dest_path
 
         # determine if we're about to send snapshots between two btrfs instances
@@ -125,34 +128,38 @@ class backup_btrfs(base.base):
         ts_now = self.get_ts_now()
         td_list = list(self.get_td(opts))
         
-        # distinguish snapshot sets by hash (so timedeltas are not applied to send/receive references of other dests)
-        hash_dir = recv_dir
-        hash = hashlib.md5(hash_dir.encode('utf-8')).hexdigest()
-        hash_glob = '*' + hash + '*'
-        
-        send_path = self.get_path_of_ts(send_dir, name + '.' + hash, ts_now)
-        recv_path = self.get_path_of_ts(recv_dir, name + '.' + hash, ts_now)
-        ts_send_list = sorted(list(self.get_ts(os.path.join(send_dir, name) + hash_glob)))
-        ts_recv_list = sorted(list(self.get_ts(os.path.join(recv_dir, name) + hash_glob)))
+        send_path = self.get_path_of_ts(send_dir, task, ts_now)
+        recv_path = self.get_path_of_ts(recv_dir, task, ts_now)
+        ts_send_list = sorted(list(self.get_ts(os.path.join(send_dir, task + '.*')))) 
+        ts_recv_list = sorted(list(self.get_ts(os.path.join(recv_dir, task + '.*')))) 
         
         # - send/receive references must be read-only
         # - writeable clones on receiving side are left behind by interrupted send/receive operation
+        # - ensure read-only status of existing snapshots even in same_fs case
         ts_of_clones = sorted(list(set(ts_send_list) & set(ts_recv_list)))
-        for ts in ts_of_clones:
-            for d in (send_dir, recv_dir):
-                path = self.get_path_of_ts(d, name + '.' + hash, ts)
-                for l in self.dispatch('/sbin/btrfs subvolume show ' + path,
-                                       passive=True,
-                                       output=None).stdout:
-                    if 'Flags' in l:
-                        if 'readonly' not in l:
-                            self.ui.warning('Deleting writable clone: ' + path)
-                            self.dispatch('/sbin/btrfs subvolume delete -c ' + path,
-                                          output='stderr')
-                            if d is send_dir:
-                                ts_send_list.remove(ts)
-                            else:
-                                ts_recv_list.remove(ts)
+        for d in (send_dir, recv_dir):
+            for ts in ts_of_clones:
+                path = self.get_path_of_ts(d, task, ts)
+                # 'property get' is not stable, sometimes it just bails out without any output
+                while True:
+                    try:
+                        ro = 'false' in self.dispatch('/sbin/btrfs property get {0} ro'.format(path),
+                                                      passive=True,
+                                                      output=None).stdout[0]
+                        break
+                    except IndexError:
+                        pass
+                if ro:
+                
+                    self.ui.warning('Deleting writable clone: ' + path)
+                    self.dispatch('/sbin/btrfs subvolume delete -c ' + path,
+                                  output='stderr')
+                    if d is send_dir:
+                        ts_send_list.remove(ts)
+                    else:
+                        ts_recv_list.remove(ts)
+            if same_fs:
+                break
 
         for idx,td in enumerate(td_list):
 
@@ -207,13 +214,13 @@ class backup_btrfs(base.base):
                         # assemble string of clones timestamp paths
                         clone_str = ''
                         for clone in ts_of_clones:
-                            clone_str = clone_str + ' -c ' + self.get_path_of_ts(send_dir, name + '.' + hash, clone)
+                            clone_str = clone_str + ' -c ' + self.get_path_of_ts(send_dir, task, clone)
 
                         # transfer reference snapshot and any reflink relations
                         self.ui.info('Cloning to {0}...'.format(recv_path))
                         self.dispatch('/sbin/btrfs send -q {0} {1} | /sbin/btrfs receive {2}'.format(clone_str,
-                                                                                                  self.get_path_of_ts(send_dir, name + '.' + hash, ts),
-                                                                                                  recv_dir),
+                                                                                                     self.get_path_of_ts(send_dir, task, ts),
+                                                                                                     recv_dir),
                                       output='stderr')
 
                         # add freshly cloned snapshot as new clone
@@ -231,7 +238,7 @@ class backup_btrfs(base.base):
                         
                     # deleting obsolete reference snapshots on src
                     for ts in ts_of_clones[:-1]:
-                        path = self.get_path_of_ts(send_dir, name + '.' + hash, ts)
+                        path = self.get_path_of_ts(send_dir, task, ts)
                         self.ui.info('Deleting obsolete reference: ' + path)
                         self.dispatch('/sbin/btrfs subvolume delete -c ' + path,
                                       output='stderr')
@@ -248,7 +255,7 @@ class backup_btrfs(base.base):
 
             # keep only a single snapshot within any given timedelta
             for idx,ts in enumerate(ts_within_td):
-                path = self.get_path_of_ts(recv_dir, name + '.' + hash, ts)
+                path = self.get_path_of_ts(recv_dir, task, ts)
                 if idx > 0:
                     self.ui.info('Deleting snapshot: ' + path)
                     self.dispatch('/sbin/btrfs subvolume delete -c ' + path,
@@ -259,15 +266,12 @@ class backup_btrfs(base.base):
             td_prev = td
 
             
-        self.ui.info('Saved {0} to {1}'.format(src_path, dest_path))
-        #finally:
-        #    [os.rmdir(t) for t in src_test_paths]
-        #    [os.rmdir(t) for t in dest_test_paths]
+        self.ui.info('Finished {0}'.format(task))
             
-    def info(self, src_path, dest_path, opts=''):
+    def info(self, task, src_path, dest_path, opts=''):
         pass
 
-    def modify(self, src_path, dest_path, opts=''):
+    def modify(self, task, src_path, dest_path, opts=''):
         pass
 
 if __name__ == '__main__':
@@ -278,7 +282,7 @@ if __name__ == '__main__':
     #    #ts_now - datetime.timedelta(hours=15),
     #    #ts_now - datetime.timedelta(days=302),
     #]
-    #src_test_paths = list(map(lambda x: self.get_path_of_ts(send_dir, name + '.' + hash, x), src_test_ts))
+    #src_test_paths = list(map(lambda x: self.get_path_of_ts(send_dir, task, x), src_test_ts))
     #dest_test_ts = [
     #    #ts_now - datetime.timedelta(minutes=30),
     #    #ts_now - datetime.timedelta(hours=5),
@@ -296,7 +300,7 @@ if __name__ == '__main__':
     #    #ts_now - datetime.timedelta(days=400),
     #    #ts_now - datetime.timedelta(days=401),
     #]
-    #dest_test_paths = list(map(lambda x: self.get_path_of_ts(recv_dir, name + '.' + hash, x), dest_test_ts))
+    #dest_test_paths = list(map(lambda x: self.get_path_of_ts(recv_dir, task, x), dest_test_ts))
     ## add reference snapshots
     #if recv_dir != send_dir:
     #    pass
@@ -307,4 +311,7 @@ if __name__ == '__main__':
     #    [os.mkdir(t) for t in src_test_paths]
     #    [os.mkdir(t) for t in dest_test_paths]
     ## ==========================
+    #finally:
+    #    [os.rmdir(t) for t in src_test_paths]
+    #    [os.rmdir(t) for t in dest_test_paths]
     pass
