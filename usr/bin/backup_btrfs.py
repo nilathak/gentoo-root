@@ -18,6 +18,7 @@ NOTES
    or otherwise the automatic extraction of incremental snapshot directory fails
   
 FIXME
+ - automatic creation of diablo link to latest (writeable) backup snapshot on offline/external array
  - try to stretch timeline, so to avoid deleting many interesting snapshot increments when booting up after a long downtime
    - if !newest timedelta slot contains 0 timestamps => shift ts_now slightly before next ts found in ts_recv_list
  - implement unittest as __main__ instead of commented code

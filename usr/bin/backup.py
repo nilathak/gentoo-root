@@ -9,8 +9,6 @@ import re
 
 transfer_engines = (
     'btrfs',
-    'partclone',
-    'rsync',
     'unison',
     )
 
@@ -24,33 +22,14 @@ tasks = {
          '/mnt/work/backup/online/diablo',
          '/mnt/work/backup/offline',
          'btrfs', '10d2m'),
-        ('games',
-         '/mnt/work/backup/offline/games',
-         '/mnt/work/backup/offline',
-         'btrfs', '2d2m'),
-        ('video',
-         '/mnt/work/backup/offline/video',
-         '/mnt/work/backup/offline',
-         'btrfs', '2d2m'),
 
         # <mount via KDE>
-        # backup.py exec -t external --mail && admin.py check_btrfs -o external --mail && umount /run/media/schweizer/external && hdparm -y `findfs UUID=afd6243b-2580-4509-8ac2-b8c5702d6212`
+        # backup.py exec -t external --mail && admin.py check_btrfs -o external --mail && umount /run/media/schweizer/external && hdparm -y `findfs UUID=3c196e96-d46c-4a9c-9583-b79c707678fc`
         ('diablo_external',
          '/mnt/work/backup/online/diablo',
          '/run/media/schweizer/external',
-         'btrfs', '1h10y4'), # add hour interval to allow easy manual refresh at any time
-        ('games_external',
-         '/mnt/work/backup/offline/games',
-         '/run/media/schweizer/external',
-         'btrfs', '1h6m'),
-        ('video_external',
-         '/mnt/work/backup/offline/video',
-         '/run/media/schweizer/external',
-         'btrfs', '1h6m'),
+         'btrfs', '1h15y4'), # add hour interval to allow easy manual refresh at any time
 
-        #('02282962282955C7',
-        # '/run/media/schweizer/external/win7.img',
-        # 'partclone', 'ntfs'),
         #('/mnt/video/',
         # '/tmp/backup/video/unison/',
         # 'unison', '-batch -ignore "Path movies" -ignore "Path 0_sort"'),
