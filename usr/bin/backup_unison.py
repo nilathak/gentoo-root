@@ -17,9 +17,6 @@ class backup_unison(base.base):
                           # synchronize modtimes, owner & group properties
                           '-times -owner -group ' +
 
-                          # FIXME maybe to allow easy user mapping on mephisto
-                          #'-numericids ' +
-
                           # be quiet
                           '-terse ' +
 

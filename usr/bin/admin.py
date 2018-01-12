@@ -1,17 +1,9 @@
 #!/usr/bin/env python3
-import collections
-import errno
-import getpass
-import itertools
-import json
-import multiprocessing
 import os
 import pylon.base as base
 import pylon.gentoo.job as job
 import pylon.gentoo.ui as ui
 import re
-import stat
-import sys
 import time
 
 class ui(ui.ui):
@@ -24,16 +16,17 @@ class ui(ui.ui):
         self.parser_check_repos.add_argument('-l', '--list_files', action='store_true')
         self.parser_check_repos.add_argument('-r', '--rebase', action='store_true')
         self.parser_games.add_argument('-c', '--cfg', action='store_true')
-        self.parser_games.add_argument('-l', '--list', action='store_true')
         self.parser_kernel.add_argument('--no-backup', action='store_true', help='do not overwrite keyring content with backup')
         self.parser_kernel.add_argument('-s', '--small', action='store_true', help='skip rsync of large ISOs')
         self.parser_update.add_argument('-s', '--sync', action='store_true')
         self.parser_update.add_argument('-t', '--tree', action='store_true')
+        self.parser_wine.add_argument('-c', '--cfg', action='store_true')
         self.parser_wrap.add_argument('-s', '--sync', action='store_true', help='sync to device')
 
     def setup(self):
         super().setup()
         if not self.args.op:
+            self.parser.print_help()
             raise self.owner.exc_class('Specify at least one subcommand operation')
         
 class admin(base.base):
@@ -46,16 +39,18 @@ class admin(base.base):
     def admin_check_audio(self):
         # ====================================================================
         'check audio metadata (low bitrates, ...)'
+        import json
+        
         walk = self.ui.args.options
         if not walk:
             walk = '/mnt/audio'
 
         dir_exceptions = (
+            '.stfolder',
             '0_sort',
-            'ringtones'
+            'ringtones',
             )
         file_exceptions = (
-            '.stfolder',
             '.stignore',
         )
 
@@ -69,7 +64,8 @@ class admin(base.base):
                     files.remove(f)
             media_files.extend(map(lambda x: os.path.join(root, x), files))
             if not dirs:
-                if 'cover.jpg' not in files:
+                if ('cover.jpg' not in files and
+                    'cover.png' not in files):
                     self.ui.warning('No album cover detected: {0}'.format(root))
 
         # process file list in chunks to avoid: Argument list is too long
@@ -99,49 +95,42 @@ class admin(base.base):
         # ====================================================================
         'periodic manual btrfs maintenance'
 
-        btrfs_label = {
-            'diablo': (
-                'external',
-                'offline',
-                'online',
-            ),
-            'belial': (
-                'belial',
-            ),
+        btrfs_config = {
+            'diablo': {
+                'external': ('/run/media/schweizer/external', False),
+                'offline': ('/mnt/work/backup/offline', False),
+                'online': ('/mnt/work/backup/online', True),
+            },
+            'belial': {
+                'belial': ('/', False),
+            },
         }
-        btrfs_mp_map = dict()
 
-        for label in btrfs_label[self.ui.hostname]:
-            if not self.ui.args.options or label in self.ui.args.options.split(','):
-                # map label to device
-                device = self.dispatch('/sbin/findfs LABEL={0}'.format(label),
-                                       output=None, passive=True).stdout[0]
-            
-                # map device to first mountpoint
-                out = self.dispatch('/bin/cat /proc/mounts | /bin/grep ' + device,
-                                    output=None, passive=True).stdout[0]
-                dev,mp,*rest = out.split(' ')
-
-                btrfs_mp_map[label] = mp;
-
-        def job(label, mp):
+        def job(label, config):
+            mp = config[0]
+            ssd = config[1]
 
             # http://marc.merlins.org/perso/btrfs/post_2014-03-19_Btrfs-Tips_-Btrfs-Scrub-and-Btrfs-Filesystem-Repair.html
             # Even in 4.3 kernels, you can still get in places where balance won't work (no place left, until you run a -m0 one first)
-            for percent in self.unique_logspace(10, 77):
+            for percent in map(lambda x: x-1, self.unique_logspace(10, 79)):
                 self.ui.info('Balancing metadata + data chunks with {1}% usage for {0}...'.format(label, percent))
                 self.dispatch('/usr/bin/nice -10 /sbin/btrfs balance start -musage={0} -dusage={0} {1}'.format(percent, mp))
             
             self.ui.info('Scrubbing {0}...'.format(label))
             self.dispatch('/usr/bin/nice -10 /sbin/btrfs scrub start -Bd ' + mp)
+
+            if ssd:
+                self.ui.info('Trimming {0}...'.format(label))
+                self.dispatch('/sbin/fstrim -v ' + mp)
             
             self.ui.info('Final usage stats for {0}...'.format(label))
             self.dispatch('/sbin/btrfs fi usage ' + mp,
                           passive=True)
             
-        for label,mp in btrfs_mp_map.items():
-            self.dispatch(lambda label=label,mp=mp: job(label,mp),
-                          blocking=False)
+        for label,config in btrfs_config[self.ui.hostname].items():
+            if not self.ui.args.options or label in self.ui.args.options.split(','):
+                self.dispatch(job, label=label, config=config,
+                              blocking=False)
         self.join()
 
         # - FIXME perform periodic defrag after "Defrag/mostly OK/extents get unshared" is completely fixed (https://btrfs.wiki.kernel.org/index.php/Status)
@@ -181,12 +170,9 @@ class admin(base.base):
         # ====================================================================
         'check data consistency on docs'
 
-        # FIXME - check for invalid files in 0_blacklist folder (maybe just allow /mnt/docs/0_sort in check_filetypes)
-
         # FIXME ensure Octave compatibility:
         # find /mnt/docs/0_sort/ -type f | grep '.*\.m$'
-        # /mnt/docs/0_archive/WaveProcessor/matlab-sim/*
-        # /mnt/docs/0_archive/fpcore/units/fpcoreblks/source/matlab/fpcoreblks/fpcoreblks/slblocks.m
+        # /mnt/docs/education/thesis/fpcore/units/fpcoreblks/source/matlab/fpcoreblks/fpcoreblks/slblocks.m
         # /mnt/docs/systems/communication/hsse00_nat_exercises
         # /mnt/docs/systems/dsp/fir iir/example_for_iir_analysis.m
         # /mnt/docs/systems/control/hsse00_ret_exercises
@@ -201,7 +187,7 @@ class admin(base.base):
         walk = self.ui.args.options
         if not walk:
             walk = '/mnt/docs'
-        sidecar_pdf_expected = re.compile(r'\.doc$|\.nb$|\.ppt$|\.vsd$|\.xls$', re.IGNORECASE)
+        sidecar_pdf_expected = re.compile(r'\.doc(x)?$|\.nb$|\.ppt(x)?$|\.vsd(x)?$|\.xls(x)?$', re.IGNORECASE)
         sidecar_pdf_wo_extension_expected = re.compile(r'exercise.*\.tex$', re.IGNORECASE)
         dir_exceptions = (
             '/mnt/docs/education/thesis/competition',
@@ -259,6 +245,8 @@ class admin(base.base):
     def admin_check_filenames(self):
         # ====================================================================
         'check for names incompatible with other filesystems'
+        import collections
+        
         walk = self.ui.args.options
         if not walk:
             walk = '/mnt'
@@ -281,7 +269,8 @@ class admin(base.base):
             
         dir_exceptions = (
             '/mnt/audio/0_sort/0_blacklist',
-            '/mnt/games',
+            '/mnt/games/0_sort/0_blacklist',
+            '/mnt/games/wine',
             '/mnt/video/0_sort/0_blacklist',
             '/mnt/work/backup',
             )
@@ -312,47 +301,90 @@ class admin(base.base):
         # ====================================================================
         'check for expected/unexpected filetypes on fileserver'
 
-        # match nothing for now
+        # - match nothing in python: a^
+        # - avoid uppercase extensions to avoid issues with restrictive flters in GUI dialogs
+        #   find /mnt/images/ -type f | grep '\.JPG$' | sed 's/\(.*\)JPG/mv "\1JPG" "\1jpg"/'
         allowed_global = re.compile('a^')
         allowed = {
-            'audio': re.compile('\.flac$|\.mp3$|\.ogg$|cover\.jpg$'),
-            # FIXME remove 0_sort after major filetype cleanup
-            #'docs': re.compile('\.epub$|\.jpg$|\.opf$|\.pdf$|\.tex$|/0_sort/.*'),
-            'docs': re.compile('.*'),
-            # FIXME check for any files in games 0_blacklist folder
+            'audio': re.compile('\.flac$|\.mp3$|\.ogg$|cover\.(jpg|png)$'),
+            
+            'docs': re.compile('$|'.join([
+                # ebooks
+                '\.epub','\.opf',
+                # main doc format
+                '\.pdf',
+                # calibre stuff
+                '/0_calibre/.*/cover.jpg', '/0_calibre/metadata.*',
+                
+                # latex
+                '\.tex','\.sty','/images/.*\.png',
+                # C/C++
+                '\.c(pp)?','\.h','\.inl',
+                # Matlab
+                '\.m','\.mat','\.mdl','\.spt',
+                # HDLs
+                '\.vhd',
+                # PSpice files
+                'hardware/analog/.*\.(cir|prb|sch)',
+                # MS office formats (check_docs ensures existing sidecar pdfs)
+                '\.vsd(x)?','\.xls(x)?','\.ppt(x)?','\.doc(x)?',
+                # Mathematica notebooks (check_docs ensures existing sidecar pdfs)
+                '\.nb',
+                
+                # KMyMoney db
+                '/finance/kmymoney_data\.kmy',
+                # xray images
+                '/(0_helga|health)/.*\.(iso|jpg)',
+                # imports that should stay as-is
+                '/education/thesis/cdrom/docs/Priest.html',
+                '/hardware/digital/verification.*/labs/.*',
+                '/software/highlevel/0_hsse00_sen.*\.txt',
+                '/systems/communication/hsse00_nat_exercises/hsse00_nat_exercise06/nrec_viterbi\.dll',
+                '/systems/dsp/noiseshaping/hk_mash/.*',
+                '/systems/modeling/matlab/mdt/.*',
+                '/systems/.*\.(raw|sfk|wav)',
+                
+                # exclude obscure file formats from university tools
+                '/hardware/digital/design/0_hsse00_.*\.(txd|ass)', # PROL16 files
+                '/hardware/layout/0_hsse00_res5/.*', # layout exercises
+                '/software/lowlevel/0_hsse00_sen3/.*Makefile.*', # AVR makefiles
+                '/software/lowlevel/0_hsse00_tin.*', # assembler exercises
+
+                # FIXME remove after 0_sort cleanup
+                '/0_sort/competition/.*',
+                '/0_sort/0_approved/systems/dsp, low_power/Grünigen, Digitale Signalverarbeitung/.*',
+            ]) + '$'),
+            
             'games': re.compile('.*'),
-            # FIXME
-            # - rename *.JPG to .jpg to see files also with restrictive filter dialogs
-            # - remove 0_sort after major filetype cleanup
+            
             'images': re.compile('\.' + '$|\.'.join([
                 # uncompressed
                 'gif','png',
                 # compressed
                 'jpg',
                 # camera videos
-                'avi',
-            ]) + '$' + '|/0_sort/.*', re.IGNORECASE),
-            # FIXME check for any files in video 0_blacklist folder
+                'avi','mov','mpg',
+            ]) + '$'),
+            
             'video': re.compile('\.' + '$|\.'.join([
-                # metadata
-                'jpg','nfo',
                 # subtitles
                 'idx','srt','sub',
-                # bluray/dvd files
-                'bup','ifo','img','iso','m2ts','vob',
+                # bluray/dvd files (DVD files must be uppercase for kodi)
+                'BUP','IFO','iso','VOB',
                 # video container
-                'avi','flv','mkv','mp4','mpg','ogm',
-            ]) + '$', re.IGNORECASE),
+                'avi','flv','mkv','mp4','mpg',
+            ]) + '$'),
+            
             'work': re.compile('.*'),
             }
 
         forbidden_global = re.compile('sync-conflict|/~[^~]*\.tmp$', re.IGNORECASE)
         forbidden = {
-            'audio': re.compile('a^'),
+            'audio': re.compile('/0_sort/0_blacklist/.*'),
             'docs': re.compile('a^'),
-            'games': re.compile('a^'),
+            'games': re.compile('/0_sort/0_blacklist/.*'),
             'images': re.compile('a^'),
-            'video': re.compile('a^'),
+            'video': re.compile('/0_sort/0_blacklist/.*'),
             'work': re.compile('a^'),
             }
         
@@ -360,19 +392,8 @@ class admin(base.base):
             '/mnt/work/backup',
             )
         file_exceptions = (
-            '/mnt/audio/comedy/.stfolder',
-            '/mnt/audio/downtempo/.stfolder',
-            '/mnt/audio/electronic/.stfolder',
-            '/mnt/audio/metal/.stfolder',
-            '/mnt/audio/ringtones/.stfolder',
-            '/mnt/docs/.stfolder',
             '/mnt/docs/.stignore',
-            '/mnt/images/.stfolder',
             '/mnt/images/.stignore',
-            '/mnt/images/0_sort/company/.stfolder',
-            '/mnt/images/0_sort/hannes/.stfolder',
-            '/mnt/work/backup/outlook/.stfolder',
-            '/mnt/work/backup/titanium.hannes/.stfolder',
         )
         for k in allowed.keys():
             for root, dirs, files in os.walk(os.path.join('/mnt', k), onerror=lambda x: self.ui.error(str(x))):
@@ -668,7 +689,6 @@ class admin(base.base):
             #'/mnt/images/fun',
         )
         file_exceptions = (
-            '.stfolder',
             '.stignore',
         )
         def chunks(l, n):
@@ -709,10 +729,48 @@ class admin(base.base):
             #        self.ui.warning('Missing CreateDate tag for: ' + os.path.join(root, f))
 
     @ui.log_exec_time
+    def admin_check_network(self):
+        # ====================================================================
+        'ensure network settings are sane'
+
+        self.ui.debug('Searching for open TCP/UDP ports...')
+        self.dispatch('nmap -sT -O localhost').stdout
+        
+        # FIXME search for open ports with nmap and filter known ones
+        # currently open ports:
+        # nmap -sT -O localhost
+        # PORT     STATE SERVICE
+        # 25/tcp   open  smtp (postfix)
+        # 53/tcp   open  domain (dnsmasq)
+        # 80/tcp   open  http (apache)
+        # 110/tcp  open  pop3 (dovecot)
+        # 139/tcp  open  netbios-ssn (samba)
+        # 143/tcp  open  imap (dovecot)
+        # 443/tcp  open  https (apache)
+        # 445/tcp  open  microsoft-ds (samba)
+        # 631/tcp  open  ipp (cups)
+        # 993/tcp  open  imaps (dovecot)
+        # 995/tcp  open  pop3s (dovecot)
+        # 5500/tcp open  hotline (clementine remote)
+        # 6881/tcp open  bittorrent-tracker (qbittorrent)
+        # 8080/tcp open  http-proxy (dbus)
+        # 9090/tcp open  zeus-admin (calibre)
+        # 53/udp   open          domain
+        # 67/udp   open|filtered dhcps
+        # 68/udp   open|filtered dhcpc
+        # 137/udp  open          netbios-ns
+        # 138/udp  open|filtered netbios-dgm
+        # 5353/udp open|filtered zeroconf
+        
+        # FIXME search for clients in all local subnets and filter known ones
+        # FIXME grep logs for openvpn logins
+        
+    @ui.log_exec_time
     def admin_check_permissions(self):
         # ====================================================================
         'check and apply access rights on system & user data paths'
-
+        import stat
+        
         def set_rights_dir(dir, owner, group, dirmask):
             os.chown(dir, owner, group)
             os.chmod(dir, dirmask)
@@ -727,13 +785,8 @@ class admin(base.base):
                        dirmask=0o750,
                        filemask=0o640):
             dir_exceptions = (
-                #'/mnt/work/backup/offline',
-                #'/mnt/work/backup/online',
-                #'/mnt/work/firewall',
-                #'/mnt/work/software',
-                #'/mnt/work/usb_boot',
-                #'/mnt/work/webserver',
-                'dosdevices', # skip potentially broken symlinks to temporarily udisk-mounted images for wine games
+                '/mnt/games/linux', # avoid stripping exec permissions
+                '/mnt/games/wine', # avoid stripping exec permissions
                 )
             file_exceptions = (
                 )
@@ -757,7 +810,7 @@ class admin(base.base):
             )
         self.ui.info('Setting rights for public data...')
         for p in public:
-            self.dispatch(lambda p=p: set_rights(p),
+            self.dispatch(set_rights, tree=p,
                           blocking=False)
         self.join()
 
@@ -768,7 +821,7 @@ class admin(base.base):
             )
         self.ui.info('Setting rights for private data...')
         for p in private:
-            self.dispatch(lambda p=p: set_rights(p, dirmask=0o700, filemask=0o600),
+            self.dispatch(set_rights, tree=p, dirmask=0o700, filemask=0o600,
                           blocking=False)
         self.join()
 
@@ -786,7 +839,6 @@ class admin(base.base):
         dir_exceptions = (
             '/home/schweizer/.local', # try to include as much from home as possible
             '/mnt',
-            '/usr/portage/distfiles',
             '/var',
             )
         file_exceptions = (
@@ -826,7 +878,7 @@ class admin(base.base):
     @ui.log_exec_time
     def admin_check_portage(self):
         # ====================================================================
-        'perform portage maintenance'
+        'check portage sanity'
 
         self.ui.info('Checking for vanished unstable versions...')
         try:
@@ -857,7 +909,7 @@ class admin(base.base):
         # ====================================================================
         'report state of administrative git repositories (+ optional rebase)'
         # FIXME
-        # - implement fast MD5 check to determine if file is not needed in repo anymore
+        # - implement fast MD5 check to determine if file is not needed in repo anymore (finish md5 check in cruft.py first, then re-use here)
         # REBASE FLOW HOWTO
         # - host MUST NEVER be merged onto master; ALWAYS operate on master directly, or just cherry-pick from host to master
         # - rebasing host with remote master ensures a minimal diffset ("superimposing" files are auto-removed if no longer needed)
@@ -967,43 +1019,484 @@ class admin(base.base):
                         self.ui.info('Master files:' + os.linesep + os.linesep.join(master_files))
         
     @ui.log_exec_time
-    def admin_check_ssd(self):
-        # ====================================================================
-        'periodic manual SSD maintenance'
-        ssd_mount_points = {
-            'diablo': (
-                '/',
-            ),
-        }
-        for mp in ssd_mount_points[self.ui.hostname]:
-            self.dispatch('/sbin/fstrim -v ' + mp)
-
-    @ui.log_exec_time
     def admin_games(self):
         # ====================================================================
-        'common games loading scripts'
-        # - run with -c to create a new wineprefix (don't forget to remove desktop integration links)
-        # - get iso volume name (used for udisk mount point): file <iso_file>
-        # FIXME
-        # - add dosbox launch sequences (including MIDI wavetable: fluidsynth -si /mnt/games/dos/0_soundfonts/Real_Font_V2.1.sf2 &)
-        # - parse /mnt/games/wine directory and present simple selection menu
-
-        udisk_path = '/run/media/schweizer'
+        'common games loading script'
+        # - LINUX: for GOG install remount tmp with exec: mount -o remount,exec /tmp
+        # - WINE: run with -c to create a new wineprefix (don't forget to remove desktop integration links)
+        # - WINE: search mounted media for install binaries during -c run
+        dos_path = '/mnt/games/dos'
         media_path = '/mnt/games/0_media'
-        wine_cmd_common = '/usr/bin/env WINEPREFIX="{0}" WINEDEBUG=warn+all /usr/bin/wine'
-        #wine_cmd_common = '/usr/bin/env WINEARCH="win32" WINEPREFIX="{0}" WINEDEBUG=warn+all /usr/bin/wine'
-        wine_cmd_virtual_desktop = 'explorer /desktop=name'
+        udisk_path = '/run/media/schweizer'
         wine_path = '/mnt/games/wine'
-        # cd to prefix dir to avoid creation unwanted files in current dir (eg, BnetLog.txt)
-        xinit_cmd = 'cd "{0}" && /usr/bin/xinit'
+        
+        games = {
+            'DOS_ascendancy': {
+                'prefix': os.path.join(dos_path, 'Ascendancy'),
+                'cmd': 'call ascend',
+            },
+            'DOS_dune2': {
+                'prefix': os.path.join(dos_path, 'Dune 2'),
+                'cmd': 'call dune2',
+            },
+            'DOS_ffmenu': {
+                'prefix': '/mnt/work/classics',
+                #'cmd': 'FFM1\FFM.EXE FFSET.FFM',
+                #'cmd': 'FFM2\FFM.EXE NEU.FFM',
+                #'cmd': 'TP\BIN\TURBO.EXE',
+                'cmd': 'command',
+            },
+            'DOS_gabriel_knight2': {
+                'prefix': os.path.join(dos_path, 'Gabriel Knight 2'),
+                'cmd': '''choice /C:12 Load first (1234) or second (1256) part of disc set? [1/2]?
+                          if errorlevel==2 goto second
+                          if errorlevel==1 goto first
+                          goto end
+                          :first
+                          imgmount D "{0}/adventures/Gabriel Knight 2/cd1.iso" -t iso
+                          imgmount E "{0}/adventures/Gabriel Knight 2/cd2.iso" -t iso
+                          imgmount F "{0}/adventures/Gabriel Knight 2/cd3.iso" -t iso
+                          imgmount G "{0}/adventures/Gabriel Knight 2/cd4.iso" -t iso
+                          goto run
+                          :second
+                          imgmount D "{0}/adventures/Gabriel Knight 2/cd1.iso" -t iso
+                          imgmount E "{0}/adventures/Gabriel Knight 2/cd2.iso" -t iso
+                          imgmount F "{0}/adventures/Gabriel Knight 2/cd5.iso" -t iso
+                          imgmount G "{0}/adventures/Gabriel Knight 2/cd6.iso" -t iso
+                          :run
+                          call GK2DOS
+                          :end'''.format(media_path),
+            },
+            'DOS_goblins2': {
+                'prefix': os.path.join(dos_path, 'Goblins 2'),
+                'cmd': 'call loader',
+            },
+            'DOS_goblins3': {
+                'prefix': os.path.join(dos_path, 'Goblins 3'),
+                'cmd': 'call gob3',
+            },
+            'DOS_kyrandia2': {
+                'prefix': os.path.join(dos_path, 'The Legend of Kyrandia 2'),
+                'cmd': '''imgmount D "{0}/adventures/The Legend of Kyrandia - The Hand of Fate/hof.iso" -t iso
+                          call hofcd'''.format(media_path),
+            },
+            'DOS_phantasmagoria': {
+                'prefix': os.path.join(dos_path, 'Phantasmagoria'),
+                'cmd': 'call sierra resource.cfg',
+            },
+            'DOS_pinball': {
+                'prefix': os.path.join(dos_path, 'Pinball Fantasies'),
+                'conf': '''[sdl]
+                           fullresolution=1280x1024''',
+                'cmd': 'call PINBALL.EXE',
+            },
+            # FIXME replace with GOG?
+            'DOS_the_7th_guest': {
+                'prefix': os.path.join(dos_path, 'The 7th Guest'),
+                'conf': '''[cpu]
+                           cycles=10000''',
+                'cmd': '''imgmount D "{0}/adventures/The 7th Guest/t7g_1.iso" -t iso
+                          call t7g'''.format(media_path),
+            },
+            'DOS_warcraft1': {
+                'prefix': os.path.join(dos_path, 'Warcraft I'),
+                'cmd': 'call war',
+            },
+            'DOS_xcom1': {
+                'prefix': os.path.join(dos_path, 'XCOM 1'),
+                'cmd': 'call runxcom.bat',
+            },
+            'DOS_xcom2': {
+                'prefix': os.path.join(dos_path, 'XCOM 2'),
+                'cmd': 'call terror',
+            },
+            # ~/.local/share/doublefine/dott/
+            'LINUX_day_of_the_tentacle': {
+                'cmd': '/mnt/games/linux/Day of the Tentacle Remastered/game/Dott',
+            },
+            'LINUX_grim_fandango': {
+                'cmd': '/mnt/games/linux/Grim Fandango Remastered/game/bin/GrimFandango',
+            },
+            # ~/.local/share/openxcom/
+            'LINUX_xcom1': {
+                'cmd': '/usr/bin/openxcom',
+            },
+            # FIXME directx10 not supported: add <DirectXVersion>9</DirectXVersion> to Engine.ini files (https://appdb.winehq.org/objectManager.php?sClass=version&iId=33234)
+            #http://vignette1.wikia.nocookie.net/anno1404guide/images/7/7c/Large_city-340_houses.png/revision/latest?cb=20130906183117
+            #http://anno1404.wikia.com/wiki/Patches
+            #http://anno1404.wikia.com/wiki/Ships
+            #http://anno1404.wikia.com/wiki/Manorial_palace
+            #http://anno1404.wikia.com/wiki/Building_layout_strategies
+            #http://anno1404.wikia.com/wiki/Bailiwick
+            #http://anno1404.wikia.com/wiki/Tournament_arena
+            'WINE_anno_1404': {
+                'prefix': os.path.join(wine_path, 'Anno 1404'),
+                #'cmd_virtual': os.path.join(media_path, 'strategy/Anno 1404/setup_anno_1404_gold_edition_2.01.5010_(13111).exe'),
+                #'cmd_virtual': os.path.join(media_path, '0_d3dx9_redist/DXSETUP.exe'),
+                'cmd': os.path.join(wine_path, 'Anno 1404/drive_c/GOG Games/Anno 1404 Gold Edition/Anno4.exe'),
+                'res': '"2560x1440"',
+            },
+            'WINE_anno_1404_venice': {
+                'prefix': os.path.join(wine_path, 'Anno 1404'),
+                'cmd': os.path.join(wine_path, 'Anno 1404/drive_c/GOG Games/Anno 1404 Gold Edition/Addon.exe'),
+                'res': '"2560x1440"',
+            },
+            'WINE_braid': {
+                'prefix': os.path.join(wine_path, 'Braid'),
+                #'cmd_custom': '/usr/bin/wineconsole ' + os.path.join(media_path, 'platformer/Braid/Setup.bat'),
+                'cmd': os.path.join(wine_path, 'Braid/drive_c/Program Files (x86)/Braid/braid.exe'),
+                #'cmd_virtual': os.path.join(media_path, '0_d3dx9_redist/DXSETUP.exe'),
+                'res': '"2560x1440"',
+                'opt': '-language english',
+            },
+            # FIXME directx10 not supported in wine? (if support is ok 'very high' should not be greyed out)
+            'WINE_crysis': {
+                'prefix': os.path.join(wine_path, 'Crysis'),
+                #'cmd_virtual': os.path.join(media_path, 'shooter/Crysis/setup_crysis_2.0.0.7.exe'),
+                #'cmd_virtual': os.path.join(media_path, '0_d3dx9_redist/DXSETUP.exe'),
+                'cmd': os.path.join(wine_path, 'Crysis/drive_c/GOG Games/Crysis/Bin32/Crysis.exe'),
+                'opt': '-dx9',
+                'res': '"2560x1440"',
+            },
+            # install failed, copied from native win
+            'WINE_dead_space': {
+                'prefix': os.path.join(wine_path, 'Dead Space'),
+                #'media': [os.path.join(media_path, 'shooter/Dead Space/DEADSPACE.ISO')],
+                #'cmd_virtual': os.path.join(udisk_path, 'DEADSPACE/autorun.exe'),
+                'cmd': os.path.join(wine_path, 'Dead Space/drive_c/Program Files (x86)/Electronic Arts/Dead Space/Dead Space.exe'),
+                'res': '"2560x1440"',
+            },
+            'WINE_deponia': {
+                'prefix': os.path.join(wine_path, 'Deponia'),
+                #'cmd_virtual': os.path.join(media_path, 'adventures/Deponia/setup_deponia_3.3.1357_(16595)_(g).exe'),
+                'cmd': os.path.join(wine_path, 'Deponia/drive_c/GOG Games/Deponia/deponia.exe'),
+                'res': '"2560x1440"',
+            },
+            # FIXME menu is broken, but gameplay is fine: https://bugs.winehq.org/show_bug.cgi?id=2082
+            'WINE_diablo': {
+                'prefix': os.path.join(wine_path, 'Diablo'),
+                'media': [os.path.join(media_path, 'rpg/Diablo/Diablo.iso')],
+                #'cmd_virtual': os.path.join(udisk_path, 'DIABLO/setup.exe'),
+                #'cmd_virtual': os.path.join(media_path, 'rpg/Diablo/drtl109.exe'),
+                'cmd': os.path.join(wine_path, 'Diablo/drive_c/Diablo/diablo.exe'),
+                'res': '"640x480"',
+            },
+            # Key d2: HGMH - 228E - 7X2K - 2867
+            # Key ld: H2DV - 66PE - 8DT9 - D4KW
+            'WINE_diablo2': {
+                'prefix': os.path.join(wine_path, 'Diablo II'),
+                'media': [os.path.join(media_path, 'rpg/Diablo 2/Cinematics.iso'),
+                          os.path.join(media_path, 'rpg/Diablo 2/Install.iso'),
+                          os.path.join(media_path, 'rpg/Diablo 2/Lord Of Destruction.iso'),
+                          os.path.join(media_path, 'rpg/Diablo 2/Play.iso')],
+                #'cmd_virtual': os.path.join(udisk_path, 'INSTALL/setup.exe'),
+                #'cmd_virtual': os.path.join(udisk_path, 'EXPANSION/setup.exe'),
+                #'cmd_virtual': os.path.join(media_path, 'rpg/Diablo 2/LODPatch_114b.exe'),
+                'cmd': os.path.join(wine_path, 'Diablo II/drive_c/Program Files (x86)/Diablo II/Game.exe'),
+                'res': '"800x600"',
+            },
+            'WINE_edna_bricht_aus': {
+                'prefix': os.path.join(wine_path, 'Edna Bricht Aus'),
+                'media': [os.path.join(media_path, 'adventures/Edna Bricht Aus/de-ebaus.iso')],
+                #'cmd_virtual': os.path.join(media_path, 'adventures/Edna Bricht Aus/eba_patch_1_1.exe'),
+                #'cmd_virtual': os.path.join(udisk_path, 'EDNABRICHTAUS/Setup.exe'),
+                'cmd_virtual': os.path.join(wine_path, 'Edna Bricht Aus/drive_c/Program Files (x86)/Xider/Edna Bricht Aus/EbaMain.exe'),
+                'res': '"800x600"',
+           },
+            # FIXME bails out with page fault (staging, non-staging, d3d9, non-d3d9)
+            # Key: 035921-492715-312032-5217
+            'WINE_emperor': {
+                'prefix': os.path.join(wine_path, 'Emperor'),
+                'media': [os.path.join(media_path, 'strategy/Emperor/Atreides.iso'),
+                          os.path.join(media_path, 'strategy/Emperor/Harkonnen.iso'),
+                          os.path.join(media_path, 'strategy/Emperor/Install.iso'),
+                          os.path.join(media_path, 'strategy/Emperor/Ordos.iso')],
+                #'cmd_virtual': os.path.join(udisk_path, 'EMPEROR1/SETUP.EXE'),
+                #'cmd_virtual': os.path.join(media_path, 'strategy/Emperor/EM109EN.EXE'),
+                'cmd': os.path.join(wine_path, 'Emperor/drive_c/Westwood/Emperor/EMPEROR.EXE'),
+                'res': '"1600x1200"',
+            },
+            # FIXME serial cannot be entered, first field is limited to only 4 chars !?! 
+            'WINE_fable': {
+                'prefix': os.path.join(wine_path, 'Fable - The Lost Chapters'),
+                'media': [os.path.join(media_path, 'rpg/Fable - The Lost Chapters/Fable The Lost Chapters.iso')],
+                'cmd_virtual': os.path.join(udisk_path, 'Fable Disk 1/setup.exe'),
+                'res': '"800x600"',
+                #'res': '"2560x1440"',
+            },
+            # Ultimate edition contains Dread Lords & both expansion packs: Dark Avatar & Twilight of the Arnor
+            # FIXME even after switching back freetype hinting engine, some fonts are still screwed up
+            #       switching fontconfig between hintslight/hintnone has no effect (although other apps are clearly affected).
+            #       same story with antialiasing
+            # explaination for version mess: 1.53 is the final version of the vanilla GC2 "Dread Lords" game.
+            # The Community Update has only changed things from the latest xpac "Twilight of Arnor"
+            # So you either own TotA as separate extension or the UE, in both cases you simply register your game to the Stardock site &
+            # then you should be able to have access to a direct link containing the latest (2.20) version.
+            'WINE_galciv2_dread_lords': {
+                'prefix': os.path.join(wine_path, 'Galactic Civilizations II Ultimate Edition'),
+                #'cmd_virtual': os.path.join(media_path, 'strategy/Galactic Civilizations II Ultimate Edition/setup_galactic_civilizations2_2.0.0.2.exe'),
+                #'cmd_virtual': os.path.join(media_path, 'strategy/Galactic Civilizations II Ultimate Edition/patch_galactic_civilizations2_2.1.0.3.exe'),
+                #'cmd_virtual': os.path.join(media_path, '0_d3dx9_redist/DXSETUP.exe'),
+                'cmd': os.path.join(wine_path, 'Galactic Civilizations II Ultimate Edition/drive_c/GOG Games/Galactic Civilizations II/GalCiv2.exe'),
+                'env': 'FREETYPE_PROPERTIES="truetype:interpreter-version=35"',
+                'res': '"2560x1440"',
+            },
+            'WINE_galciv2_dark_avatar': {
+                'prefix': os.path.join(wine_path, 'Galactic Civilizations II Ultimate Edition'),
+                'cmd': os.path.join(wine_path, 'Galactic Civilizations II Ultimate Edition/drive_c/GOG Games/Galactic Civilizations II/DarkAvatar/GC2DarkAvatar.exe'),
+                'env': 'FREETYPE_PROPERTIES="truetype:interpreter-version=35"',
+                'res': '"2560x1440"',
+            },
+            'WINE_galciv2_twilight_of_the_arnor': {
+                'prefix': os.path.join(wine_path, 'Galactic Civilizations II Ultimate Edition'),
+                'cmd': os.path.join(wine_path, 'Galactic Civilizations II Ultimate Edition/drive_c/GOG Games/Galactic Civilizations II/Twilight/GC2TwilightOfTheArnor.exe'),
+                'env': 'FREETYPE_PROPERTIES="truetype:interpreter-version=35"',
+                'res': '"2560x1440"',
+            },
+            'WINE_gobliiins': {
+                'prefix': os.path.join(wine_path, 'Gobliiins'),
+                #'cmd_virtual': os.path.join(media_path, 'adventures/Gobliiins/setup_gobliiins_2.1.0.64.exe'),
+                'cmd': os.path.join(wine_path, 'Gobliiins\drive_c\GOG Games\Gobliiins\ScummVM\scummvm.exe'),
+                'opt': '-c "C:\GOG Games\Gobliiins\gobliiins1.ini" gobliiins1',
+                'res': '"2560x1440"',
+            },
+            # FIXME slow, try medium settings
+            'WINE_grim_dawn': {
+                'prefix': os.path.join(wine_path, 'Grim Dawn'),
+                #'cmd_virtual': os.path.join(media_path, 'rpg/Grim Dawn/setup_grim_dawn_1.0.4.0_hotfix_1_(17257)_(g).exe'),
+                'cmd': os.path.join(wine_path, 'Grim Dawn/drive_c/GOG Games/Grim Dawn/Grim Dawn.exe'),
+                'res': '"2560x1440"',
+            },
+            'WINE_machinarium': {
+                'prefix': os.path.join(wine_path, 'Machinarium'),
+                #'cmd_virtual': os.path.join(media_path, 'adventures/Machinarium/Machinarium_full_en.exe'),
+                'cmd_virtual': os.path.join(wine_path, 'Machinarium/drive_c/Program Files (x86)/Machinarium/machinarium.exe'),
+                'res': '"1024x768"',
+            },
+            # FIXME slow? strange crash after switching x servers
+            'WINE_mass_effect': {
+                'prefix': os.path.join(wine_path, 'Mass Effect'),
+                'media': [os.path.join(media_path, 'rpg/Mass Effect/rld-mass.iso')],
+                #'cmd_virtual': os.path.join(udisk_path, 'Mass Effect/setup.exe'),
+                #'cmd_virtual': os.path.join(media_path, 'rpg/Mass Effect/1.02 patch & crack/MassEffect_EFIGS_1.02.exe'),
+                'cmd': os.path.join(wine_path, 'Mass Effect/drive_c/Program Files (x86)/Mass Effect/MassEffectLauncher.exe'),
+                'res': '"2560x1440"',
+            },
+            # FIXME sound jitters
+            'WINE_monkey_island1': {
+                'prefix': os.path.join(wine_path, 'Monkey Island 1 - Secret of Monkey Island'),
+                'media': [os.path.join(media_path, 'adventures/Monkey Island 1 Special Edition/rld-mise.iso')],
+                #'cmd_virtual': os.path.join(udisk_path, 'MISE/setup.exe'),
+                #'cmd_virtual': os.path.join(media_path, '0_d3dx9_redist/DXSETUP.exe'),
+                'cmd': os.path.join(wine_path, 'Monkey Island 1 - Secret of Monkey Island/drive_c/Program Files (x86)/Secret Of Monkey Island SE/MISE.exe'),
+                'res': '"2560x1440"',
+            },
+            # FIXME sound jitters (less than mi1)
+            'WINE_monkey_island2': {
+                'prefix': os.path.join(wine_path, 'Monkey Island 2 - LeChucks Revenge'),
+                'media': [os.path.join(media_path, 'adventures/Monkey Island 2 Special Edition/sr-mi2se.iso')],
+                #'cmd_virtual': os.path.join(udisk_path, 'MI2SE/Setup.exe'),
+                'cmd': os.path.join(wine_path, 'Monkey Island 2 - LeChucks Revenge/drive_c/Program Files (x86)/LucasArts/Monkey Island 2 LeChucks Revenge Special Edition/Monkey2.exe'),
+                'res': '"2560x1440"',
+            },
+            # GOG claims inofficial 1.05 patch is already included:
+            # https://www.gog.com/forum/psychonauts/psychonauts_patch_1_05_retail_gog_and_other_dd_officially_unofficial_release/page4
+            'WINE_psychonauts': {
+                'prefix': os.path.join(wine_path, 'Psychonauts'),
+                #'cmd_virtual': os.path.join(media_path, 'platformer/Psychonauts/setup_psychonauts_2.2.0.13.exe'),
+                'cmd': os.path.join(wine_path, 'Psychonauts/drive_c/GOG Games/Psychonauts/Psychonauts.exe'),
+                'res': '"2560x1440"',
+            },
+            # FIXME slow
+            'WINE_realmyst_masterpiece': {
+                'prefix': os.path.join(wine_path, 'RealMyst Masterpiece'),
+                #'cmd_virtual': os.path.join(media_path, 'adventures/RealMyst Masterpiece/setup_realmyst_masterpiece_edition_2.1.0.6.exe'),
+                'cmd': os.path.join(wine_path, 'RealMyst Masterpiece/drive_c/GOG Games/realMyst Masterpiece Edition/realMyst.exe'),
+                'res': '"2560x1440"',
+            },
+            # FIXME crash during game start
+            # Key: TLAD-JPAC-PGHL-3PTB-32
+            'WINE_return_to_castle_wolfenstein': {
+                'prefix': os.path.join(wine_path, 'Return to Castle Wolfenstein'),
+                'media': [os.path.join(media_path, 'shooter/Return To Castle Wolfenstein/RZR-WOLF.iso')],
+                #'cmd_virtual': os.path.join(udisk_path, 'rtcw/Setup.exe'),
+                'cmd_virtual': os.path.join(wine_path, 'Return to Castle Wolfenstein/drive_c/Program Files (x86)/Return to Castle Wolfenstein/WolfSP.exe'),
+                'res': '"2560x1440"',
+            },
+            'WINE_siedler2': {
+                'prefix': os.path.join(wine_path, 'The Settlers II - 10th Anniversary'),
+                'media': [os.path.join(media_path, 'strategy/Die Siedler 2 (10th Anniversary Edition)/rld-sett2.iso')],
+                #'cmd_virtual': os.path.join(udisk_path, 'SettlersII/setup.exe'),
+                'cmd': os.path.join(wine_path, 'The Settlers II - 10th Anniversary/drive_c/Program Files (x86)/Ubisoft/Funatics/The Settlers II - 10th Anniversary/bin/S2DNG.exe'),
+                'res': '"2560x1440"',
+            },
+            'WINE_simtower': {
+                'prefix': os.path.join(wine_path, 'Simtower'),
+                #'cmd_virtual': os.path.join(media_path, 'simulator/SimTower/SETUP.EXE'),
+                'cmd_virtual': os.path.join(wine_path, 'Simtower/drive_c/SIMTOWER/SIMTOWER.EXE'),
+                'res': '"1024x768"',
+            },
+            'WINE_star_trek_elite_force': {
+                'prefix': os.path.join(wine_path, 'Star Trek Elite Force'),
+                'media': [os.path.join(media_path, 'shooter/Star Trek - Elite Force/cd.iso')],
+                #'cmd_virtual': os.path.join(udisk_path, 'ELITEFORCE/Setup.exe'),
+                #'cmd_virtual': os.path.join(media_path, 'shooter/Star Trek - Elite Force/eliteforcepatch1_2.exe'),
+                'cmd': os.path.join(wine_path, 'Star Trek Elite Force/drive_c/Program Files (x86)/Raven/Star Trek Voyager Elite Force/stvoy.exe'),
+                'res': '"1600x1200"',
+            },
+            'WINE_the_book_of_unwritten_tales': {
+                'prefix': os.path.join(wine_path, 'The Book of Unwritten Tales'),
+                'media': [os.path.join(media_path, 'adventures/The Book of Unwritten Tales/BoUT.iso')],
+                #'cmd_virtual': os.path.join(udisk_path, 'BoUT/Setup.exe'),
+                'cmd': os.path.join(wine_path, 'The Book of Unwritten Tales/drive_c/Program Files (x86)/Unwritten Tales/bout.exe'),
+                'res': '"2560x1440"',
+            },
+            'WINE_the_book_of_unwritten_tales_2': {
+                'prefix': os.path.join(wine_path, 'The Book of Unwritten Tales 2'),
+                'media': [os.path.join(media_path, 'adventures/The Book of Unwritten Tales 2/BoUT2.iso')],
+                #'cmd_virtual': os.path.join(udisk_path, 'TBOUT2/setup.exe'),
+                'cmd': os.path.join(wine_path, 'The Book of Unwritten Tales 2/drive_c/Program Files (x86)/The Book of Unwritten Tales 2/Windows/BouT2.exe'),
+                'res': '"2560x1440"',
+            },
+            # FIXME resolution needs to be maxed with glide wrapper (bails out), old save games already work!
+            'WINE_the_longest_journey': {
+                'prefix': os.path.join(wine_path, 'The Longest Journey'),
+                'media': [os.path.join(media_path, 'adventures/The Longest Journey/Thelongestjourney.iso')],
+                #'cmd_virtual': os.path.join(udisk_path, 'TLJ/Setup.exe'),
+                #'cmd_virtual': os.path.join(media_path, 'adventures/The Longest Journey/tlj-patch-161.exe'),
+                'cmd': os.path.join(wine_path, 'The Longest Journey/drive_c/Program Files (x86)/Funcom/The Longest Journey/Game.exe'),
+                #'cmd': os.path.join(wine_path, 'The Longest Journey/drive_c/Program Files (x86)/Funcom/The Longest Journey/dgVoodooCpl.exe'),
+                'res': '"2560x1440"',
+            },
+            'WINE_the_whispered_world': {
+                'prefix': os.path.join(wine_path, 'The Whispered World'),
+                #'cmd_virtual': os.path.join(media_path, 'adventures/The Whispered World/setup_the_whispered_world_special_edition_2.1.0.11.exe'),
+                'cmd': os.path.join(wine_path, 'The Whispered World/drive_c/GOG Games/The Whispered World SE/twwse.exe'),
+                'res': '"2560x1440"',
+            },
+            # Key: 628G-GDKW-9B92-VXDZ
+            'WINE_warcraft2': {
+                'prefix': os.path.join(wine_path, 'Warcraft II'),
+                'media': [os.path.join(media_path, 'strategy/Warcraft 2/WIIBNE.iso')],
+                #'cmd_virtual': os.path.join(udisk_path, 'WAR2BNECD/setup.exe'),
+                'cmd': os.path.join(wine_path, 'Warcraft II/drive_c/Program Files (x86)/Warcraft II BNE/Warcraft II BNE.exe'),
+                'res': '"640x480"',
+            },
+            # FIXME cutscenes are skipped (new 1.28 patch should resolve this, see https://bugs.winehq.org/show_bug.cgi?id=35651)
+            'WINE_warcraft3': {
+                'prefix': os.path.join(wine_path, 'Warcraft III'),
+                #'cmd_virtual': os.path.join(media_path, 'strategy/Warcraft 3 - Reign of Chaos & Frozen Throne/Warcraft III eSK.exe'),
+                'cmd_virtual': os.path.join(wine_path, 'Warcraft III/drive_c/Program Files (x86)/Warcraft III Frozen Throne eSK/Warcraft III.exe'),
+                'opt': '-opengl -nativefullscr',
+                'res': '"2560x1440"',
+            },
+            # FIXME cutscenes are skipped (new 1.28 patch should resolve this, see https://bugs.winehq.org/show_bug.cgi?id=35651)
+            # Frozen Throne Key: FN7MVD-HHMX-KYPMYD-FTHT-H99GY8
+            'WINE_warcraft3_frozen_throne': {
+                'prefix': os.path.join(wine_path, 'Warcraft III'),
+                #'cmd_virtual': os.path.join(media_path, 'strategy/Warcraft 3 - Reign of Chaos & Frozen Throne/Warcraft III eSK.exe'),
+                'cmd_virtual': os.path.join(wine_path, 'Warcraft III/drive_c/Program Files (x86)/Warcraft III Frozen Throne eSK/Frozen Throne.exe'),
+                'opt': '-opengl -nativefullscr',
+                'res': '"2560x1440"',
+            },
+            'WINE_worldofgoo': {
+                'prefix': os.path.join(wine_path, 'WorldOfGoo'),
+                #'cmd_virtual': os.path.join(media_path, 'simulator/World of Goo/WorldOfGooSetup.1.30.exe'),
+                #'cmd_virtual': os.path.join(media_path, '0_d3dx9_redist/DXSETUP.exe'),
+                'cmd': os.path.join(wine_path, 'WorldOfGoo/drive_c/Program Files (x86)/WorldOfGoo/WorldOfGoo.exe'),
+                'res': '"2560x1440"',
+            },
+        }
 
+        ########################## Interface
+        import readline
+        class MyCompleter(object):
+            def __init__(self, options):
+                self.options = sorted(options)
+         
+            def complete(self, text, state):
+                if state == 0:  # on first trigger, build possible matches
+                    if text:  # cache matches (entries that start with entered text)
+                        self.matches = [s for s in self.options if text in s]
+                    else:  # no text entered, all matches possible
+                        self.matches = self.options[:]
+         
+                # return match indexed by state
+                try: 
+                    return self.matches[state]
+                except IndexError:
+                    return None
+         
+        completer = MyCompleter(games.keys())
+        readline.set_completer(completer.complete)
+        readline.parse_and_bind('tab: complete')
+
+        sel = input("Selection? Use TAB!: ")
+        game = games[sel]
+        # cd into exe dir, to avoid working directory issues
+        xinit_cmd = 'cd "{0}" && /usr/bin/xinit'
+        
+        ##########################
+        # use separate X server, to avoid rearranged plamoids due to resolution change
+        if 'DOS' in sel:
+            dosbox_conf_str = '''
+                [sdl]
+                output=opengl
+                # only the normal2x scaler is able to scale to full native desktop resolution (with crappy performance)
+                # so choose a good & fast x3 scaler for maximum fullscreen resolution (3x original games resolution)
+                #fullresolution=2560x1440
+                fullscreen=true
+                sensitivity=25
+                [render]
+                # all 4:3 games need aspect correction on current 2560x1440 (16:9) display.
+                # a higher scaling factor increases the fullscreen resolution and sharpness (especially when aspect correction is enabled)
+                scaler=normal3x
+                aspect=true
+                [sblaster]
+                irq=5
+                [midi]
+                # fluidsynth to be independent of ALSA wavetable support; check devices with aconnect -lio
+                midiconfig=128:0
+                [speaker]
+                pcspeaker=false
+                [dos]
+                keyboardlayout=gr
+                {1}
+                [autoexec]
+                @echo off
+                mount C "{0}"
+                C:
+                {2}
+                exit'''.format(game['prefix'], game['conf'] if 'conf' in game else '', game['cmd'])
+
+            self.dispatch('fluidsynth -si ' + os.path.join(dos_path, '0_soundfonts/Real_Font_V2.1.sf2'),
+                          blocking=False, daemon=True)
+
+            with open('/tmp/dosbox.conf', 'w') as dosbox_conf:
+                dosbox_conf.write(dosbox_conf_str)
+            dosbox_cmd = '/usr/bin/dosbox -conf /tmp/dosbox.conf'
+            self.dispatch(' '.join([xinit_cmd.format(dos_path), dosbox_cmd, '-- :1 vt8']))
+
+            # FIXME fluidsynth is not properly killed, even with daemon=True
+            self.join(timeout=1)
+            
+        ##########################
+        if 'LINUX' in sel:
+            # FIXME gog games: game screen clipped when started via xinit
+            self.dispatch('cd "{0}" && "{1}"'.format(os.path.dirname(game['cmd']), game['cmd']))
+            #self.dispatch(' '.join([xinit_cmd.format(os.path.dirname(game['cmd'])), '"{0}"'.format(game['cmd']), '-- :1 vt8']))
+        
+        ##########################
+        elif 'WINE' in sel:
+            self.wine_wrapper(game)
+            
+    def wine_wrapper(self, app):
         import contextlib 
         import dbus # supported on diablo only
 
         bus = dbus.SystemBus()
         udisks2_manager_obj = bus.get_object('org.freedesktop.UDisks2', '/org/freedesktop/UDisks2/Manager')
         media = None
-
         xorg_conf_str = '''
         Section "Monitor"
             Identifier             "Monitor0"
@@ -1021,134 +1514,47 @@ class admin(base.base):
                 Modes              {0}
             EndSubSection
         EndSection
+        Section "InputClass"
+            Identifier             "system-keyboard"
+            Option                 "XkbLayout"  "de"
+            Option                 "XkbModel"   "pc101"
+            Option                 "XkbVariant" "nodeadkeys"
+        EndSection
         '''
-        
-        games = {
-            # FIXME Setup.exe is not starting up without virtual desktop
-            'anno_1404': {
-                'prefix': os.path.join(wine_path, 'Anno 1404'),
-                'media': [os.path.join(media_path, 'strategy/Anno 1404/2.Anno 1404 Dawn Of Discovery.iso')],
-                'cmd': os.path.join(udisk_path, 'Anno 1404 PC/setup.exe'),
-                #'cmd': os.path.join(media_path, 'rpg/Mass Effect/1.02 patch & crack/MassEffect_EFIGS_1.02.exe'),
-                #'cmd': os.path.join(wine_path, 'Mass Effect/drive_c/Program Files (x86)/Mass Effect/MassEffectLauncher.exe'),
-                'res': '"2560x1440"',
-            },
-            # FIXME Setup.exe does not detect ISO, bails out
-            'dead_space': {
-                'prefix': os.path.join(wine_path, 'Dead Space'),
-                'media': [os.path.join(media_path, 'shooter/Dead Space/DEADSPACE.ISO')],
-                'cmd': os.path.join(udisk_path, 'DEADSPACE/autorun.exe'),
-                #'cmd': os.path.join(media_path, 'rpg/Mass Effect/1.02 patch & crack/MassEffect_EFIGS_1.02.exe'),
-                #'cmd': os.path.join(wine_path, 'Mass Effect/drive_c/Program Files (x86)/Mass Effect/MassEffectLauncher.exe'),
-                'res': '"2560x1440"',
-            },
-            'diablo2': {
-                'prefix': os.path.join(wine_path, 'Diablo II'),
-                'media': [os.path.join(media_path, 'rpg/Diablo 2/Cinematics.iso'),
-                          os.path.join(media_path, 'rpg/Diablo 2/Install.iso'),
-                          os.path.join(media_path, 'rpg/Diablo 2/Lord Of Destruction.iso'),
-                          os.path.join(media_path, 'rpg/Diablo 2/Play.iso')],
-                #'cmd': os.path.join(udisk_path, 'INSTALL/setup.exe'),
-                #'cmd': os.path.join(udisk_path, 'EXPANSION/setup.exe'),
-                #'cmd': os.path.join(media_path, 'rpg/Diablo 2/LODPatch_114b.exe'),
-                'cmd': os.path.join(wine_path, 'Diablo II/drive_c/Program Files (x86)/Diablo II/Game.exe'),
-                'res': '"800x600"',
-            },
-            'edna_bricht_aus': {
-                'prefix': os.path.join(wine_path, 'Edna Bricht Aus'),
-                'media': [os.path.join(media_path, 'adventures/Edna Bricht Aus/de-ebaus.iso')],
-                #'cmd': os.path.join(media_path, 'adventures/Edna Bricht Aus/eba_patch_1_1.exe'),
-                #'cmd': os.path.join(udisk_path, 'EDNABRICHTAUS/Setup.exe'),
-                'cmd': os.path.join(wine_path, 'Edna Bricht Aus/drive_c/Program Files (x86)/Xider/Edna Bricht Aus/EbaMain.exe'),
-                'res': '"800x600"',
-           },
-            # FIXME Setup.exe is not starting up without virtual desktop
-            'emperor': {
-                'prefix': os.path.join(wine_path, 'Emperor'),
-                'media': [os.path.join(media_path, 'strategy/Emperor/Atreides.iso'),
-                          os.path.join(media_path, 'strategy/Emperor/Harkonnen.iso'),
-                          os.path.join(media_path, 'strategy/Emperor/Install.iso'),
-                          os.path.join(media_path, 'strategy/Emperor/Ordos.iso')],
-                'cmd': os.path.join(udisk_path, 'EMPEROR1/SETUP.EXE'),
-                'res': '"1024x768"',
-            },
-            # FIXME separate wineprefix really needed?
-            'machinarium': {
-                'cmd': '/mnt/games/install/Machinarium/machinarium.exe',
-                'res': '"1024x768"',
-            },
-            'mass_effect': {
-                'prefix': os.path.join(wine_path, 'Mass Effect'),
-                'media': [os.path.join(media_path, 'rpg/Mass Effect/rld-mass.iso')],
-                #'cmd': os.path.join(udisk_path, 'Mass Effect/setup.exe'),
-                #'cmd': os.path.join(media_path, 'rpg/Mass Effect/1.02 patch & crack/MassEffect_EFIGS_1.02.exe'),
-                'cmd': os.path.join(wine_path, 'Mass Effect/drive_c/Program Files (x86)/Mass Effect/MassEffectLauncher.exe'),
-                'res': '"2560x1440"',
-            },
-            'simtower': {
-                'prefix': os.path.join(wine_path, 'Simtower'),
-                #'cmd': os.path.join(media_path, 'simulator/SimTower/SETUP.EXE'),
-                'cmd': os.path.join(wine_path, 'Simtower/drive_c/SIMTOWER/SIMTOWER.EXE'),
-                'res': '"1024x768"',
-            },
-            # FIXME Setup.exe is not starting up without virtual desktop
-            'star_trek_elite_force': {
-                'prefix': os.path.join(wine_path, 'Star Trek Elite Force'),
-                'media': [os.path.join(media_path, 'shooter/Star Trek - Elite Force/cd.iso')],
-                'cmd': os.path.join(udisk_path, 'ELITEFORCE/Setup.exe'),
-                #'cmd': os.path.join(media_path, 'rpg/Mass Effect/1.02 patch & crack/MassEffect_EFIGS_1.02.exe'),
-                #'cmd': os.path.join(wine_path, 'Mass Effect/drive_c/Program Files (x86)/Mass Effect/MassEffectLauncher.exe'),
-                'res': '"2560x1440"',
-            },
-            # FIXME not even configured yet, mdf->iso conversion needed
-            'the_whispered_world': {
-                'prefix': os.path.join(wine_path, 'The Whispered World'),
-                'media': [os.path.join(media_path, 'adventures/The Whispered World/cd.iso')],
-                'cmd': os.path.join(udisk_path, 'ELITEFORCE/Setup.exe'),
-                #'cmd': os.path.join(media_path, 'rpg/Mass Effect/1.02 patch & crack/MassEffect_EFIGS_1.02.exe'),
-                #'cmd': os.path.join(wine_path, 'Mass Effect/drive_c/Program Files (x86)/Mass Effect/MassEffectLauncher.exe'),
-                'res': '"2560x1440"',
-            },
-            'warcraft2': {
-                'prefix': os.path.join(wine_path, 'Warcraft II'),
-                'media': [os.path.join(media_path, 'strategy/Warcraft 2/WIIBNE.iso')],
-                #'cmd': os.path.join(udisk_path, 'WAR2BNECD/setup.exe'),
-                'cmd': os.path.join(wine_path, 'Warcraft II/drive_c/Program Files (x86)/Warcraft II BNE/Warcraft II BNE.exe'),
-                'res': '"640x480"',
-            },
-            # FIXME cutscenes are skipped (directshow/quartz errors, gstreamer use flag doesn't help) 
-            'warcraft3': {
-                'prefix': os.path.join(wine_path, 'Warcraft III'),
-                'media': [os.path.join(media_path, 'strategy/Warcraft 3 - Reign of Chaos/RZR-WC3.iso')],
-                'cmd': os.path.join(wine_path, 'Warcraft III/drive_c/Program Files (x86)/Warcraft III/War3.exe'),
-                #'cmd': 'regedit',
-                'opt': '-opengl',
-                'res': '"1600x1200"',
-                #'res': '"2560x1440"',
-            },
-        }
 
-        if self.ui.args.list or self.ui.args.options not in games.keys():
-            list(map(print, sorted(games.keys())))
-            return
-
-        game = games[self.ui.args.options]
+        # cd into exe dir, to avoid working directory issues
+        xinit_cmd = 'cd "{0}" && /usr/bin/xinit'
 
         with open('/tmp/xorg.conf', 'w') as xorg_conf:
-            xorg_conf.write(xorg_conf_str.format(game['res']))
-        
-        if self.ui.args.cfg:
-            cmd = wine_cmd_common.format(game['prefix']) + 'cfg'
-        else:
-            wine_cmd_opt = game['opt'] if 'opt' in game.keys() else ''
-            # FIXME virtual desktop distorts diablo2 cinematics. test all other games if they still need it
-            wine_cmd = ' '.join([wine_cmd_common.format(game['prefix']), wine_cmd_virtual_desktop + ',' + game['res'], '"' +  game['cmd'] + '"', wine_cmd_opt])
-            #wine_cmd = ' '.join([wine_cmd_common.format(game['prefix']), '"' +  game['cmd'] + '"', wine_cmd_opt])
-            cmd = ' '.join([xinit_cmd.format(game['prefix']), wine_cmd, '-- :1 -config xorg.wine.conf vt8'])
+            xorg_conf.write(xorg_conf_str.format(app['res']))
 
-        if 'media' in game.keys():
+        # disable winemenubuilder to prevent programs from creating menu entries and file associations
+        wine_cmd_common_prefix = '/usr/bin/env {1} WINEPREFIX="{0}" WINEDLLOVERRIDES=winemenubuilder.exe=d WINEDEBUG=warn'.format(app['prefix'], app['env'] if 'env' in app.keys() else '')
+
+        if self.ui.args.cfg:
+            cmd = '{0} {1}'.format(wine_cmd_common_prefix, '/usr/bin/winecfg')
+        else:
+            cmd_type = [k for k,v in app.items() if k.startswith('cmd')][0]
+            wine_cmd_virtual_desktop = 'explorer /desktop=name'
+            wine_cmd_opt = app['opt'] if 'opt' in app.keys() else ''
+            
+            wine_cmd_common = '{0} {1}'.format(wine_cmd_common_prefix, '/usr/bin/wine')
+            app_cmd = app[cmd_type]
+            working_dir = os.path.dirname(app_cmd)
+            if cmd_type == 'cmd_virtual':
+                wine_cmd = ' '.join([wine_cmd_common, wine_cmd_virtual_desktop + ',' + app['res'], '"' +  app_cmd + '"', wine_cmd_opt])
+            else:
+                if cmd_type == 'cmd_custom':
+                    wine_cmd_common = '{0} {1}'.format(wine_cmd_common_prefix, app['cmd_custom'])
+                    app_cmd = ''
+                    working_dir = app['prefix']
+                wine_cmd = ' '.join([wine_cmd_common, '"' +  app_cmd + '"', wine_cmd_opt])
+
+            cmd = ' '.join([xinit_cmd.format(working_dir), wine_cmd, '-- :1 -config xorg.wine.conf vt8'])
+
+        if 'media' in app.keys():
             with contextlib.ExitStack() as stack:
-                media = [stack.enter_context(open(medium, 'r+b')) for medium in game['media']]
+                media = [stack.enter_context(open(medium, 'r+b')) for medium in app['media']]
                 udisks2_manager = dbus.Interface(udisks2_manager_obj, 'org.freedesktop.UDisks2.Manager')
                 mounts = list()
                 for medium in media:
@@ -1171,7 +1577,8 @@ class admin(base.base):
     def admin_kernel(self):
         # ====================================================================
         'scripting stuff to build kernels'
-
+        import multiprocessing
+        
         key_mp = '/tmp/keyring'
         key_image = '/mnt/work/usb_boot'
         
@@ -1224,9 +1631,6 @@ class admin(base.base):
             rsync_exclude = [
                 # kernels & grub.cfgs
                 '--exclude="/diablo"',
-
-                # convenience key
-                '--exclude="/key"',
             ]
             rsync_exclude_small = [
                 '--exclude="/*.iso"',
@@ -1256,7 +1660,8 @@ class admin(base.base):
     def admin_luks_container(self):
         # ====================================================================
         'access luks container via udisks2'
-
+        import sys
+        
         from PyQt5.QtWidgets import QApplication, QInputDialog, QLineEdit
         # application needed before any widget creation
         app = QApplication(sys.argv)
@@ -1306,57 +1711,35 @@ class admin(base.base):
                 loop = dbus.Interface(loop_obj, 'org.freedesktop.UDisks2.Loop')
                 loop.Delete({})
 
-    def admin_rotate_wpa(self):
-        # ====================================================================
-        'renew random guest access key for wlan'
-        # FIXME
-        # - regenerate WPA passphrase by generating an OTP from google-authenticator PAM module
-        # - generate matching OTP via app on my own phone, and show it to guests for time-limited login
-        # - optional: WIFI-config barcodes cannot be created directly from google-authenticator, code would need to be pasted into
-        #   some kind of barcode generator app first. in addition on-the-fly config by taking QR photo works only on Android.
-        pass
-
     def admin_spindown(self):
         # ====================================================================
-        'force large HDD into standby mode'
+        'force offline HDD array into standby mode'
 
         # import supported on diablo only
         import psutil
-
-        luks_uuid = 'd6464602-14fc-485c-befc-d22ba8e4d533'
-        btrfs_label = 'offline'
-        frequency_per_hour = 4
-
-        # find devices
-        # all commands sporadically return an empty string
-        while True:
-            try:
-                device = os.path.basename(self.dispatch('/sbin/findfs UUID=' + luks_uuid,
-                                                        output=None, passive=True).stdout[0])
-                btrfs_device = self.dispatch('/sbin/findfs LABEL=' + btrfs_label,
-                                             output=None, passive=True).stdout[0]
-                ignore_dev,mp,*ignore_rest = self.dispatch('/bin/cat /proc/mounts | /bin/grep ' + btrfs_device,
-                                                           output=None, passive=True).stdout[0].split(' ')
-                break
-            except IndexError:
-                pass
+        
+        disks = ('/dev/disk/by-id/ata-WDC_WD60EFRX-68L0BN1_WD-WX11D3743LU8',
+                 '/dev/disk/by-id/ata-WDC_WD60EFRX-68MYMN1_WD-WX41DA427KFT')
+        mount_point = '/mnt/work/backup/offline'
                 
-        # script will be run via cron.hourly
-        for i in range(frequency_per_hour):
+        # script will be run asynchronously by various cron scripts, so ensure the disks are really idle
+        self.ui.debug('checking for ongoing IO operations using a practical hysteresis')
 
-            self.ui.debug('checking for ongoing IO operations using a practical hysteresis')
-            io_ops_1st = str(psutil.disk_io_counters(True)[device])
+        # monitor activity of a single RAID1 device
+        sd_path = os.path.realpath(disks[0])
+        partition = sd_path.split('/')[-1]+'1'
+        io_ops_1st = str(psutil.disk_io_counters(True)[partition])
             
-            # 60s buffer to next run-crons job
-            time.sleep(60 / frequency_per_hour * 59)
+        time.sleep(5*60)
 
-            io_ops_2nd = str(psutil.disk_io_counters(True)[device])
-            if io_ops_1st == io_ops_2nd:
-                self.ui.debug('Ensure filesystem buffers are flushed')
-                self.dispatch('/sbin/btrfs filesystem sync ' + mp,
-                              output=None)
-                self.ui.debug('Spinning down...')
-                self.dispatch('/sbin/hdparm -y /dev/' + device,
+        io_ops_2nd = str(psutil.disk_io_counters(True)[partition])
+        if io_ops_1st == io_ops_2nd:
+            self.ui.debug('Ensure filesystem buffers are flushed')
+            self.dispatch('/sbin/btrfs filesystem sync ' + mount_point,
+                          output=None)
+            self.ui.debug('Spinning down...')
+            for disk in disks:
+                self.dispatch('/sbin/hdparm -y ' + disk,
                               output=None)
 
     def admin_update(self):
@@ -1416,29 +1799,57 @@ class admin(base.base):
             self.dispatch('/usr/bin/emerge @preserved-rebuild',
                           output='nopipes')
 
+    @ui.log_exec_time
+    def admin_wine(self):
+        # ====================================================================
+        'common wine app loading script'
+        # - run with -c to create a new wineprefix (don't forget to remove desktop integration links)
+        
+        apps = {
+            'hjsplit': {
+                'prefix': '/mnt/work/software/split',
+                'cmd_virtual': '/mnt/work/software/split/hjsplit.exe',
+                #'cmd_custom': '/usr/bin/msiexec /i /mnt/work/software/Hyperlapse.inst/Hyperlapse-Pro-for-64-bit-Windows_1.6-116-d4cb262-2.msi',
+                #'cmd': '/mnt/work/software/Hyperlapse/drive_c/Program Files (x86)/Microsoft Hyperlapse Pro/Microsoft.Research.Hyperlapse.Desktop.exe',
+                'res': '"2560x1440"',
+            },
+            # FIXME err:module:import_dll Library MSVCR120_CLR0400.dll (which is needed by L"C:\\windows\\Microsoft.NET\\Framework64\\v4.0.30319\\clr.dll") not found
+            # try next: installing dotnet 4.0 before 4.5, otherwise run it on company notebook
+            'hyperlapse': {
+                'prefix': '/mnt/work/software/Hyperlapse',
+                'cmd_virtual': '/mnt/work/software/Hyperlapse.inst/NDP452-KB2901907-x86-x64-AllOS-ENU.exe',
+                #'cmd_custom': '/usr/bin/msiexec /i /mnt/work/software/Hyperlapse.inst/Hyperlapse-Pro-for-64-bit-Windows_1.6-116-d4cb262-2.msi',
+                #'cmd': '/mnt/work/software/Hyperlapse/drive_c/Program Files (x86)/Microsoft Hyperlapse Pro/Microsoft.Research.Hyperlapse.Desktop.exe',
+                'res': '"2560x1440"',
+            },
+        }
+
+        import readline
+        class MyCompleter(object):
+            def __init__(self, options):
+                self.options = sorted(options)
+            def complete(self, text, state):
+                if state == 0:  # on first trigger, build possible matches
+                    if text:  # cache matches (entries that start with entered text)
+                        self.matches = [s for s in self.options if text in s]
+                    else:  # no text entered, all matches possible
+                        self.matches = self.options[:]
+                # return match indexed by state
+                try: 
+                    return self.matches[state]
+                except IndexError:
+                    return None
+        completer = MyCompleter(apps.keys())
+        readline.set_completer(completer.complete)
+        readline.parse_and_bind('tab: complete')
+        sel = input("Selection? Use TAB!: ")
+        
+        self.wine_wrapper(apps[sel])
+            
     def admin_wrap(self):
         # ====================================================================
         'mount wrap image for local administration'
 
-        # FIXME
-        # Loading Linux 4.6.2-gentoo ...
-        # CPU: vendor_id 'Geode by NSC' unknown, using generic init.
-        # CPU: Your system may be unstable.
-        # dmi: Firmware registration failed.
-        # ...
-        #  * Setting console font [lat9w-16] ...
-        #  [ ok ]
-        # getfont: KDFONTOP: No space left on device
-        #  
-        def makedirs_if_missing(path):
-            try:
-                os.makedirs(path)
-            except OSError as exc:
-                if exc.errno == errno.EEXIST:
-                    pass
-                else:
-                    raise exc
-     
         image = '/mnt/work/hypnocube/WRAP.1E.img'
         local = '/tmp/wrap'
         device = 'belial'
@@ -1462,14 +1873,15 @@ class admin(base.base):
             # local, device
             ('/dev', '/dev'),
             ('/dev/pts', '/dev/pts'),
-            ('/mnt', '/mnt'), # without games & video
+            ('/mnt', '/mnt'),
             ('/proc', '/proc'),
+            ('/run', '/run'),
             ('/sys', '/sys'),
             ('/tmp', '/tmp'),
             )
      
         # first instance does mounting
-        makedirs_if_missing(local)
+        os.makedirs(local, exist_ok=True)
         try:
             self.dispatch('/bin/mount | /bin/grep ' + local,
                           output=None, passive=True)
@@ -1477,7 +1889,7 @@ class admin(base.base):
             self.dispatch('/bin/mount ' + image + ' ' + local,
                           output='stderr')
             for (src, dest) in bind_map:
-                makedirs_if_missing(src)
+                os.makedirs(src, exist_ok=True)
                 self.dispatch('/bin/mount -o bind {0} {1}'.format(src, os.path.join(local, dest.strip('/'))),
                               output='stderr')
      
@@ -1528,12 +1940,6 @@ class admin(base.base):
         else:
             self.ui.warning('No other device chroot environment should be open while doing rsync, close them...')
 
-    def admin_show(self):
-        'FIXME remove after btrfs backup is fixed again'
-        import glob
-        for s in glob.glob(self.ui.args.options):
-            self.dispatch('btrfs sub show ' + s)
-            
 if __name__ == '__main__':
     app = admin(job_class=job.job,
                 ui_class=ui)
