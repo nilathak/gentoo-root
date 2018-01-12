@@ -56,3 +56,4 @@ dhcp:x:993:
 uucp:x:14:uucp
 ldap:x:439:
 syncthing:x:110:
+i2c:x:997:schweizer
