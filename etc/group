@@ -41,12 +41,10 @@ openvpn:x:1006:
 postmaster:x:103:
 vboxusers:x:102:schweizer
 polkituser:x:101:
-plugdev:x:999:schweizer
 lock:x:998:
 dovecot:x:97:
 dovenull:x:109:
 realtime:x:995:schweizer
-tor:x:994:
 polkitd:x:992:
 dnsmasq:x:991:
 input:x:990:
@@ -54,6 +52,5 @@ crontab:x:989:
 sddm:x:996:
 dhcp:x:993:
 uucp:x:14:uucp
-ldap:x:439:
 syncthing:x:110:
 i2c:x:997:schweizer
