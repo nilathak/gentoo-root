@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
+'''container script for all backup related admin tasks
+'''
 import hashlib
 import os
 import pprint
-import pylon.base as base
-import pylon.gentoo.job as job
-import pylon.gentoo.ui as ui
+import pylon.base
+import pylon.gentoo.job
+import pylon.gentoo.ui
 import re
+import sys
 
 transfer_engines = (
     'btrfs',
@@ -36,7 +39,7 @@ tasks = {
     ),
 }
 
-class ui(ui.ui):
+class ui(pylon.gentoo.ui.ui):
     def __init__(self, owner):
         super().__init__(owner)
 
@@ -54,11 +57,11 @@ class ui(ui.ui):
             raise self.owner.exc_class('Specify at least one subcommand operation')
         if self.args.engine and self.args.engine not in transfer_engines:
             raise self.owner.exc_class('unknown backup engine ' + self.args.engine)
-        if self.args.task and not list(filter(lambda x: re.search(self.args.task, x[0]), tasks[self.hostname])):
+        if self.args.task and not any(True for x in tasks[self.hostname] if re.search(self.args.task, x[0])):
             raise self.owner.exc_class('no matching backup task')
         
-class backup(base.base):
-    'container script for all backup related admin tasks'
+class backup(pylon.base.base):
+    __doc__ = sys.modules[__name__].__doc__
 
     def run_core(self):
         # initialize enabled backup engines
@@ -97,29 +100,29 @@ class backup(base.base):
         return ((not self.ui.args.engine or self.ui.args.engine == engine) and
                 (not self.ui.args.task or re.search(self.ui.args.task, task)))
             
-    @ui.log_exec_time
+    @pylon.log_exec_time
     def backup_exec(self):
         'perform host-specific tasks'
         self.do_loop('do', False)
         self.join()
 
-    @ui.log_exec_time
+    @pylon.log_exec_time
     def backup_info(self):
         'show generic info about tasks'
         self.do_loop('info', True)
 
-    @ui.log_exec_time
+    @pylon.log_exec_time
     def backup_modify(self):
         'modify specified tasks'
         self.do_loop('modify', True)
 
-    @ui.log_exec_time
+    @pylon.log_exec_time
     def backup_list(self):
         'display list of configured backup tasks'
         self.ui.info('Backup tasks:')
         pprint.pprint(tasks)
 
 if __name__ == '__main__':
-    app = backup(job_class=job.job,
+    app = backup(job_class=pylon.gentoo.job.job,
                  ui_class=ui)
     app.run()

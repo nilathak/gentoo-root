@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-'''
-implement btrfs subvolume snapshot backups based on interval string
+'''implement btrfs subvolume snapshot backups based on interval string
   
 NOTES
  - if !newest timedelta slot contains 0 timestamps => nothing
@@ -35,11 +34,10 @@ FIXME
    for snapshots containing many large transient files (downloads, caches, ...), but it's generally better to decrease
    snapshot retention time in this case
 '''
-    
 import datetime
 import glob
 import os
-import pylon.base as base
+import pylon.base
 import re
 import sys
 import threading
@@ -47,8 +45,7 @@ import threading
 snapshot_pattern = '%Y-%m-%dT%H-%M-%S'
 snapshot_regex = '[0-9]*-[0-9]*-[0-9]*T[0-9]*-[0-9]*-[0-9]*'
 
-class backup_btrfs(base.base):
-
+class backup_btrfs(pylon.base.base):
     __doc__ = sys.modules[__name__].__doc__
     
     @staticmethod
@@ -66,17 +63,17 @@ class backup_btrfs(base.base):
     def get_td(self, delta_str):
         if 'h' in delta_str:
             num = int(re.search('([0-9]*)h', delta_str).group(1))
-            for delta in base.base.unique_logspace(num, 24):
+            for delta in pylon.unique_logspace(num, 24):
                 # reduce hour delta to better match backup script calling resolution (cron.hourly)
                 # this ensures we're taking a snapshot each hour
                 yield datetime.timedelta(minutes=60*delta-1, seconds=55)
         if 'd' in delta_str:
             num = int(re.search('([0-9]*)d', delta_str).group(1))
-            for delta in base.base.unique_logspace(num, 30):
+            for delta in pylon.unique_logspace(num, 30):
                 yield datetime.timedelta(days=delta)
         if 'm' in delta_str:
             num = int(re.search('([0-9]*)m', delta_str).group(1))
-            for delta in base.base.unique_logspace(num, 12):
+            for delta in pylon.unique_logspace(num, 12):
                 yield datetime.timedelta(days=delta*30)
                 
         # largest delta needs to be calibrated
@@ -84,7 +81,7 @@ class backup_btrfs(base.base):
             match = re.search('([0-9]*)y([0-9]*)', delta_str)
             num = int(match.group(1))
             year_factor = int(match.group(2))
-            for delta in base.base.unique_logspace(num, 12*year_factor):
+            for delta in pylon.unique_logspace(num, 12*year_factor):
                 yield datetime.timedelta(days=delta*30)
 
         # - append delta to max past, to facilitate keeping 1 snapshot after last configured delta
@@ -215,7 +212,7 @@ class backup_btrfs(base.base):
                         # assemble string of clones timestamp paths
                         clone_str = ''
                         for clone in ts_of_clones:
-                            clone_str = clone_str + ' -c ' + self.get_path_of_ts(send_dir, task, clone)
+                            clone_str += ' -c ' + self.get_path_of_ts(send_dir, task, clone)
 
                         # transfer reference snapshot and any reflink relations
                         self.ui.info('Cloning to {0}...'.format(recv_path))

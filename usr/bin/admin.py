@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
+'''script collection for system administration
+'''
 import os
-import pylon.base as base
-import pylon.gentoo.job as job
-import pylon.gentoo.ui as ui
+import pylon.base
+import pylon.gentoo.job
+import pylon.gentoo.ui
 import re
+import sys
 import time
 
-class ui(ui.ui):
+class ui(pylon.gentoo.ui.ui):
     def __init__(self, owner):
         super().__init__(owner)
         self.parser_common.add_argument('-o', '--options', help='pass custom string to operations')
@@ -29,22 +32,18 @@ class ui(ui.ui):
             self.parser.print_help()
             raise self.owner.exc_class('Specify at least one subcommand operation')
         
-class admin(base.base):
-    'script collection for system administration'
-
+class admin(pylon.base.base):
+    __doc__ = sys.modules[__name__].__doc__
+    
     def run_core(self):
         getattr(self, self.__class__.__name__ + '_' + self.ui.args.op)()
 
-    @ui.log_exec_time
+    @pylon.log_exec_time
     def admin_check_audio(self):
         # ====================================================================
         'check audio metadata (low bitrates, ...)'
         import json
         
-        walk = self.ui.args.options
-        if not walk:
-            walk = '/mnt/audio'
-
         dir_exceptions = (
             '.stfolder',
             '0_sort',
@@ -53,23 +52,21 @@ class admin(base.base):
         file_exceptions = (
             '.stignore',
         )
+        walk = self.ui.args.options or '/mnt/audio'
 
         media_files = list()
         for root, dirs, files in os.walk(walk, onerror=lambda x: self.ui.error(str(x))):
-            for d in list(dirs):
-                if list(filter(lambda x: re.search(x, os.path.join(root, d)), dir_exceptions)):
-                    dirs.remove(d)
-            for f in list(files):
-                if list(filter(lambda x: re.search(x, os.path.join(root, f)), file_exceptions)):
-                    files.remove(f)
-            media_files.extend(map(lambda x: os.path.join(root, x), files))
+            [dirs.remove(d) for d in list(dirs) for x in dir_exceptions if re.search(x, os.path.join(root, d))]
+            [dirs.remove(d) for d in list(dirs) if os.path.ismount(os.path.join(root, d))]
+            [files.remove(f) for f in list(files) for x in file_exceptions if re.search(x, os.path.join(root, f))]
+            media_files += (os.path.join(root, x) for x in files)
             if not dirs:
                 if ('cover.jpg' not in files and
                     'cover.png' not in files):
                     self.ui.warning('No album cover detected: {0}'.format(root))
 
         # process file list in chunks to avoid: Argument list is too long
-        for chunk in self.chunk(1000, media_files):
+        for chunk in pylon.chunk(1000, media_files):
             out = self.dispatch('/usr/bin/exiftool -j "{0}"'.format('" "'.join(chunk)),
                                 output=None).stdout
             for file_dict in json.loads(os.linesep.join(out)):
@@ -77,9 +74,7 @@ class admin(base.base):
                 file     = file_dict['SourceFile']
                 
                 if filetype == 'MP3' or filetype == 'OGG':
-                    bitrate = file_dict.get('AudioBitrate')
-                    if not bitrate:
-                        bitrate = file_dict['NominalBitrate']
+                    bitrate = file_dict.get('AudioBitrate') or file_dict['NominalBitrate']
                     # ignore unit specification
                     bitrate = float(bitrate.split()[-2])
                     if bitrate < 130:
@@ -90,7 +85,7 @@ class admin(base.base):
                     if int(x) < 500 or int(y) < 500:
                         self.ui.warning('Low resolution (< 500x500) cover detected: {0}'.format(file))
 
-    @ui.log_exec_time
+    @pylon.log_exec_time
     def admin_check_btrfs(self):
         # ====================================================================
         'periodic manual btrfs maintenance'
@@ -111,8 +106,8 @@ class admin(base.base):
             ssd = config[1]
 
             # http://marc.merlins.org/perso/btrfs/post_2014-03-19_Btrfs-Tips_-Btrfs-Scrub-and-Btrfs-Filesystem-Repair.html
-            # Even in 4.3 kernels, you can still get in places where balance won't work (no place left, until you run a -m0 one first)
-            for percent in map(lambda x: x-1, self.unique_logspace(10, 79)):
+            # Even in 4.3 kernels, you can still get in places where balance won't work (no space left, until you run a -m0 one first)
+            for percent in (x-1 for x in pylon.unique_logspace(10, 79)):
                 self.ui.info('Balancing metadata + data chunks with {1}% usage for {0}...'.format(label, percent))
                 self.dispatch('/usr/bin/nice -10 /sbin/btrfs balance start -musage={0} -dusage={0} {1}'.format(percent, mp))
             
@@ -165,7 +160,7 @@ class admin(base.base):
         #            except self.exc_class:
         #                self.ui.error('filefrag failed for {0}'.format(path))
 
-    @ui.log_exec_time
+    @pylon.log_exec_time
     def admin_check_docs(self):
         # ====================================================================
         'check data consistency on docs'
@@ -183,24 +178,18 @@ class admin(base.base):
         # ??? mnt/docs/systems/modeling/matlab/MSystem
         # ??? mnt/docs/systems/modeling/matlab/mdt
         
-        
-        walk = self.ui.args.options
-        if not walk:
-            walk = '/mnt/docs'
-        sidecar_pdf_expected = re.compile(r'\.doc(x)?$|\.nb$|\.ppt(x)?$|\.vsd(x)?$|\.xls(x)?$', re.IGNORECASE)
-        sidecar_pdf_wo_extension_expected = re.compile(r'exercise.*\.tex$', re.IGNORECASE)
         dir_exceptions = (
-            '/mnt/docs/education/thesis/competition',
             )
         file_exceptions = (
             )
+        sidecar_pdf_expected = re.compile(r'\.doc(x)?$|\.nb$|\.ppt(x)?$|\.vsd(x)?$|\.xls(x)?$', re.IGNORECASE)
+        sidecar_pdf_wo_extension_expected = re.compile(r'exercise.*\.tex$', re.IGNORECASE)
+        walk = self.ui.args.options or '/mnt/docs'
+        
         for root, dirs, files in os.walk(walk, onerror=lambda x: self.ui.error(str(x))):
-            for d in list(dirs):
-                if os.path.join(root, d) in dir_exceptions:
-                    dirs.remove(d)
-            for f in list(files):
-                if os.path.join(root, f) in file_exceptions:
-                    files.remove(f)
+            [dirs.remove(d) for d in list(dirs) for x in dir_exceptions if re.search(x, os.path.join(root, d))]
+            [dirs.remove(d) for d in list(dirs) if os.path.ismount(os.path.join(root, d))]
+            [files.remove(f) for f in list(files) for x in file_exceptions if re.search(x, os.path.join(root, f))]
             for f in files:
                 sidecar = f + '.pdf'
                 sidecar_wo_extension = os.path.splitext(f)[0] + '.pdf'
@@ -241,15 +230,20 @@ class admin(base.base):
         #    # embed media text into pdf file
         #
 
-    @ui.log_exec_time
+    @pylon.log_exec_time
     def admin_check_filenames(self):
         # ====================================================================
         'check for names incompatible with other filesystems'
         import collections
         
-        walk = self.ui.args.options
-        if not walk:
-            walk = '/mnt'
+        dir_exceptions = (
+            '/mnt/audio/0_sort/0_blacklist',
+            '/mnt/games/0_sort/0_blacklist',
+            '/mnt/games/wine',
+            '/mnt/video/0_sort/0_blacklist',
+            )
+        file_exceptions = (
+            )
 
         # os & os.path & pathlib DO NOT provide anything to check NT path validity
         # custom implementation inspired from
@@ -267,36 +261,33 @@ class admin(base.base):
         # . as first character can be valid, see https://stackoverflow.com/questions/10744305/how-to-create-gitignore-file
         ntfs_invalid_trailing_chars = re.compile(r'\.$|^\ |\ $')
             
-        dir_exceptions = (
-            '/mnt/audio/0_sort/0_blacklist',
-            '/mnt/games/0_sort/0_blacklist',
-            '/mnt/games/wine',
-            '/mnt/video/0_sort/0_blacklist',
-            '/mnt/work/backup',
-            )
-        file_exceptions = (
-            )
+        walk = self.ui.args.options or '/mnt'
+        
         for root, dirs, files in os.walk(walk, onerror=lambda x: self.ui.error(str(x))):
-            for d in list(dirs):
-                if list(filter(lambda x: re.search(x, os.path.join(root, d)), dir_exceptions)):
-                    dirs.remove(d)
-            for f in list(files):
-                if list(filter(lambda x: re.search(x, os.path.join(root, f)), file_exceptions)):
-                    files.remove(f)
-            names = list(dirs)
-            names.extend(files)
-            lower_case_dupe_map = collections.Counter([x.lower() for x in names])
-            for name in sorted(names):
+            [dirs.remove(d) for d in list(dirs) for x in dir_exceptions if re.search(x, os.path.join(root, d))]
+            [dirs.remove(d) for d in list(dirs) if os.path.ismount(os.path.join(root, d))]
+            [files.remove(f) for f in list(files) for x in file_exceptions if re.search(x, os.path.join(root, f))]
+            names = dirs + files
+            names.sort()
+            lower_case_dupe_map = collections.Counter(x.lower() for x in names)
+            for name in names:
                 if (ntfs_invalid_names.search(name) or
                     ntfs_invalid_chars.search(name) or
                     ntfs_invalid_trailing_chars.search(name) or
                     len(name) > 255 or
-                    list(filter(lambda c: ord(c) < 32, name))):
+                    any(ord(c) < 32 for c in name)):
                     self.ui.warning('NTFS incompatible filesystem object: ' + os.path.join(root, name))
+
+        for root, dirs, files in os.walk(walk, onerror=lambda x: self.ui.error(str(x))):
+            [dirs.remove(d) for d in list(dirs) if os.path.ismount(os.path.join(root, d))]
+            names = dirs + files
+            names.sort()
+            lower_case_dupe_map = collections.Counter(x.lower() for x in names)
+            for name in names:
                 if lower_case_dupe_map[name.lower()] > 1:
                     self.ui.warning('Filesystem objects only distinguished by case: ' + os.path.join(root, name))
-
-    @ui.log_exec_time
+                    
+    @pylon.log_exec_time
     def admin_check_filetypes(self):
         # ====================================================================
         'check for expected/unexpected filetypes on fileserver'
@@ -389,7 +380,6 @@ class admin(base.base):
             }
         
         dir_exceptions = (
-            '/mnt/work/backup',
             )
         file_exceptions = (
             '/mnt/docs/.stignore',
@@ -397,12 +387,9 @@ class admin(base.base):
         )
         for k in allowed.keys():
             for root, dirs, files in os.walk(os.path.join('/mnt', k), onerror=lambda x: self.ui.error(str(x))):
-                for d in list(dirs):
-                    if list(filter(lambda x: re.search(x, os.path.join(root, d)), dir_exceptions)):
-                        dirs.remove(d)
-                for f in list(files):
-                    if list(filter(lambda x: re.search(x, os.path.join(root, f)), file_exceptions)):
-                        files.remove(f)
+                [dirs.remove(d) for d in list(dirs) for x in dir_exceptions if re.search(x, os.path.join(root, d))]
+                [dirs.remove(d) for d in list(dirs) if os.path.ismount(os.path.join(root, d))]
+                [files.remove(f) for f in list(files) for x in file_exceptions if re.search(x, os.path.join(root, f))]
                 for f in files:
                     name = os.path.join(root, f)
                     if ((not allowed_global.search(name) and
@@ -411,7 +398,7 @@ class admin(base.base):
                         forbidden[k].search(name)):
                         self.ui.warning('Unexpected filetype detected: ' + name)
                         
-    @ui.log_exec_time
+    @pylon.log_exec_time
     def admin_check_images(self):
         # ====================================================================
         'check image metadata (silently convert to xmp)'
@@ -659,10 +646,6 @@ class admin(base.base):
         #self.ui.warning('DISABLED until properly implemented!')
         #return
 
-        walk = self.ui.args.options
-        if not walk:
-            walk = '/mnt/images'
-            
         # - convert existing metadata to xmp, while deleting all
         #   metadata which cannot be converted to xmp.
         # - repair broken metadata structures
@@ -680,6 +663,7 @@ class admin(base.base):
         #   - change filename according to createdate
         #   - if there are pics without a createdate:
         #     exiftool -r -P -overwrite_original '-FileModifyDate>xmp:CreateDate' <file>
+        
         dir_exceptions = (
             '/mnt/images/[a-s]',
             '/mnt/images/[u-z]',
@@ -691,26 +675,24 @@ class admin(base.base):
         file_exceptions = (
             '.stignore',
         )
-        def chunks(l, n):
-            for i in xrange(0, len(l), n):
-                yield l[i:i+n]
+        walk = self.ui.args.options or '/mnt/images'
 
         metadata = dict()
         for root, dirs, files in os.walk(walk, onerror=lambda x: self.ui.error(str(x))):
-            for d in list(dirs):
-                if list(filter(lambda x: re.search(x, os.path.join(root, d)), dir_exceptions)):
-                    dirs.remove(d)
+            [dirs.remove(d) for d in list(dirs) for x in dir_exceptions if re.search(x, os.path.join(root, d))]
+            [dirs.remove(d) for d in list(dirs) if os.path.ismount(os.path.join(root, d))]
+            #[files.remove(f) for f in list(files) for x in file_exceptions if re.search(x, os.path.join(root, f))]
             combined_regex = re.compile('|'.join(file_exceptions))
-            abs_paths = map(lambda x: os.path.join(root, x), files)
-            excl_paths = filter(lambda x: not re.search(combined_regex, x), abs_paths)
-            quoted_paths = ['"' + path + '"' for path in excl_paths]
+            abs_paths = (os.path.join(root, x) for x in files)
+            excl_paths = (x for x in abs_paths if not re.search(combined_regex, x))
+            quoted_paths = ['"{0}"'.format(path) for path in excl_paths]
             if quoted_paths:
                 out = self.dispatch('/usr/bin/exiftool -Orientation {0}'.format(' '.join(quoted_paths)),
                                     output=None).stdout
                 orientation_tags = out[1::2]
                 metadata.update(zip(excl_paths, orientation_tags))
         print(metadata)
-            #while(chunks(excl_paths, 10)):
+            #while(self.chunk(10, excl_paths)):
             #    out = self.dispatch('/usr/bin/exiftool -Orientation {0}'.format(' '.join(excl_paths)),
             #                        output=None).stdout
             #        if len()out:
@@ -728,7 +710,7 @@ class admin(base.base):
             #                         None).stdout) == 0:
             #        self.ui.warning('Missing CreateDate tag for: ' + os.path.join(root, f))
 
-    @ui.log_exec_time
+    @pylon.log_exec_time
     def admin_check_network(self):
         # ====================================================================
         'ensure network settings are sane'
@@ -765,25 +747,21 @@ class admin(base.base):
         # FIXME search for clients in all local subnets and filter known ones
         # FIXME grep logs for openvpn logins
         
-    @ui.log_exec_time
+    @pylon.log_exec_time
     def admin_check_permissions(self):
         # ====================================================================
         'check and apply access rights on system & user data paths'
         import stat
         
-        def set_rights_dir(dir, owner, group, dirmask):
-            os.chown(dir, owner, group)
-            os.chmod(dir, dirmask)
+        def set_perm(path, owner, group, mask):
+            os.chown(path, owner, group)
+            os.chmod(path, mask)
 
-        def set_rights_file(file, owner, group, filemask):
-            os.chown(file, owner, group)
-            os.chmod(file, filemask)
-
-        def set_rights(tree,
-                       owner=1000,  # schweizer
-                       group=100,   # users
-                       dirmask=0o750,
-                       filemask=0o640):
+        def set_perms(tree,
+                      owner=1000,  # schweizer
+                      group=100,   # users
+                      dirmask=0o750,
+                      filemask=0o640):
             dir_exceptions = (
                 '/mnt/games/linux', # avoid stripping exec permissions
                 '/mnt/games/wine', # avoid stripping exec permissions
@@ -791,17 +769,12 @@ class admin(base.base):
             file_exceptions = (
                 )
             for root, dirs, files in os.walk(tree, onerror=lambda x: self.ui.error(str(x))):
-                for d in list(dirs):
-                    if list(filter(lambda x: re.search(x, os.path.join(root, d)), dir_exceptions)):
-                        dirs.remove(d)
-                for f in list(files):
-                    if list(filter(lambda x: re.search(x, os.path.join(root, f)), file_exceptions)):
-                        files.remove(f)
+                [dirs.remove(d) for d in list(dirs) for x in dir_exceptions if re.search(x, os.path.join(root, d))]
+                [dirs.remove(d) for d in list(dirs) if os.path.ismount(os.path.join(root, d))]
+                [files.remove(f) for f in list(files) for x in file_exceptions if re.search(x, os.path.join(root, f))]
                 if not self.ui.args.dry_run:
-                    for d in dirs:
-                        set_rights_dir(os.path.join(root, d), owner, group, dirmask)
-                    for f in files:
-                        set_rights_file(os.path.join(root, f), owner, group, filemask)
+                    [set_perm(os.path.join(root, d), owner, group, dirmask) for d in dirs]
+                    [set_perm(os.path.join(root, f), owner, group, filemask) for f in files]
         
         public = (
             '/mnt/audio',
@@ -810,7 +783,7 @@ class admin(base.base):
             )
         self.ui.info('Setting rights for public data...')
         for p in public:
-            self.dispatch(set_rights, tree=p,
+            self.dispatch(set_perms, tree=p,
                           blocking=False)
         self.join()
 
@@ -821,7 +794,7 @@ class admin(base.base):
             )
         self.ui.info('Setting rights for private data...')
         for p in private:
-            self.dispatch(set_rights, tree=p, dirmask=0o700, filemask=0o600,
+            self.dispatch(set_perms, tree=p, dirmask=0o700, filemask=0o600,
                           blocking=False)
         self.join()
 
@@ -844,14 +817,9 @@ class admin(base.base):
         file_exceptions = (
             )
         for root, dirs, files in os.walk('/', onerror=lambda x: self.ui.error(str(x))):
-            for d in list(dirs):
-                path = os.path.join(root, d)
-                if (path in dir_exceptions or
-                    os.path.ismount(path)):
-                    dirs.remove(d)
-            for f in list(files):
-                if os.path.join(root, f) in file_exceptions:
-                    files.remove(f)
+            [dirs.remove(d) for d in list(dirs) for x in dir_exceptions if re.search(x, os.path.join(root, d))]
+            [dirs.remove(d) for d in list(dirs) if os.path.ismount(os.path.join(root, d))]
+            [files.remove(f) for f in list(files) for x in file_exceptions if re.search(x, os.path.join(root, f))]
 
             for d in dirs:
                 dir = os.path.join(root, d)
@@ -875,7 +843,7 @@ class admin(base.base):
                     # dead links are reported by cruft anyway
                     pass
                         
-    @ui.log_exec_time
+    @pylon.log_exec_time
     def admin_check_portage(self):
         # ====================================================================
         'check portage sanity'
@@ -904,7 +872,7 @@ class admin(base.base):
         except self.exc_class:
             pass
          
-    @ui.log_exec_time
+    @pylon.log_exec_time
     def admin_check_repos(self):
         # ====================================================================
         'report state of administrative git repositories (+ optional rebase)'
@@ -974,19 +942,19 @@ class admin(base.base):
                     host_files_stat = self.dispatch(git_cmd + 'diff ' + self.ui.hostname + ' --name-status -- ' + ' '.join(host_files),
                                                     output=None, passive=True).stdout
 
-                    import gentoolkit.equery.check
-                    import gentoolkit.helpers
-                    import portage
-                    gtk_check = gentoolkit.equery.check.VerifyContents()
-                    gtk_find = gentoolkit.helpers.FileOwner()
-
-                    # assume standard portage tree locatation at /
-                    trees = portage.create_trees()
-                    vardb = trees['/']["vartree"].dbapi
-
-                    host_file_abs = map(lambda x: '/' + x, host_files)
-                    affected_pkg = map(lambda x: x.mycpv, vardb._owners.get_owners(list(host_file_abs)))
-                    print(list(affected_pkg))
+                    #import gentoolkit.equery.check
+                    #import gentoolkit.helpers
+                    #import portage
+                    #gtk_check = gentoolkit.equery.check.VerifyContents()
+                    #gtk_find = gentoolkit.helpers.FileOwner()
+                    # 
+                    ## assume standard portage tree locatation at /
+                    #trees = portage.create_trees()
+                    #vardb = trees['/']["vartree"].dbapi
+                    # 
+                    #host_file_abs = map(lambda x: '/' + x, host_files)
+                    #affected_pkg = map(lambda x: x.mycpv, vardb._owners.get_owners(list(host_file_abs)))
+                    #print(list(affected_pkg))
 
                     
                     self.ui.info('Host status:' + os.linesep + os.linesep.join(host_files_stat))
@@ -1018,10 +986,12 @@ class admin(base.base):
                     if master_files:
                         self.ui.info('Master files:' + os.linesep + os.linesep.join(master_files))
         
-    @ui.log_exec_time
+    @pylon.log_exec_time
     def admin_games(self):
         # ====================================================================
         'common games loading script'
+        # - DOS/WINE: mt32 is always superior to general midi, even with soundfonts: https://en.wikipedia.org/wiki/List_of_MT-32-compatible_computer_games
+        # - DOS/WINE: use CM-32L roland midi roms via munt or scummvm (cm-32l is less noisy than mt-32 and adds more sound effects)
         # - LINUX: for GOG install remount tmp with exec: mount -o remount,exec /tmp
         # - WINE: run with -c to create a new wineprefix (don't forget to remove desktop integration links)
         # - WINE: search mounted media for install binaries during -c run
@@ -1041,9 +1011,9 @@ class admin(base.base):
             },
             'DOS_ffmenu': {
                 'prefix': '/mnt/work/classics',
-                #'cmd': 'FFM1\FFM.EXE FFSET.FFM',
-                #'cmd': 'FFM2\FFM.EXE NEU.FFM',
-                #'cmd': 'TP\BIN\TURBO.EXE',
+                #'cmd': 'FFM1/FFM.EXE FFSET.FFM',
+                #'cmd': 'FFM2/FFM.EXE NEU.FFM',
+                #'cmd': 'TP/BIN/TURBO.EXE',
                 'cmd': 'command',
             },
             'DOS_gabriel_knight2': {
@@ -1073,6 +1043,8 @@ class admin(base.base):
             },
             'DOS_goblins3': {
                 'prefix': os.path.join(dos_path, 'Goblins 3'),
+                'conf': '''[cpu]
+                           cycles=20000''',
                 'cmd': 'call gob3',
             },
             'DOS_kyrandia2': {
@@ -1100,7 +1072,11 @@ class admin(base.base):
             },
             'DOS_warcraft1': {
                 'prefix': os.path.join(dos_path, 'Warcraft I'),
+                'conf': '''[cpu]
+                           cycles=20000''',
                 'cmd': 'call war',
+                # FIXME automatically switch between fluidsynth and mt32 deamons, debug deamon shutdown
+                'midi': 'gm',
             },
             'DOS_xcom1': {
                 'prefix': os.path.join(dos_path, 'XCOM 1'),
@@ -1108,7 +1084,7 @@ class admin(base.base):
             },
             'DOS_xcom2': {
                 'prefix': os.path.join(dos_path, 'XCOM 2'),
-                'cmd': 'call terror',
+                'cmd': 'call terrorcd',
             },
             # ~/.local/share/doublefine/dott/
             'LINUX_day_of_the_tentacle': {
@@ -1118,7 +1094,7 @@ class admin(base.base):
                 'cmd': '/mnt/games/linux/Grim Fandango Remastered/game/bin/GrimFandango',
             },
             # ~/.local/share/openxcom/
-            'LINUX_xcom1': {
+            'LINUX_openxcom': {
                 'cmd': '/usr/bin/openxcom',
             },
             # FIXME directx10 not supported: add <DirectXVersion>9</DirectXVersion> to Engine.ini files (https://appdb.winehq.org/objectManager.php?sClass=version&iId=33234)
@@ -1134,19 +1110,16 @@ class admin(base.base):
                 #'cmd_virtual': os.path.join(media_path, 'strategy/Anno 1404/setup_anno_1404_gold_edition_2.01.5010_(13111).exe'),
                 #'cmd_virtual': os.path.join(media_path, '0_d3dx9_redist/DXSETUP.exe'),
                 'cmd': os.path.join(wine_path, 'Anno 1404/drive_c/GOG Games/Anno 1404 Gold Edition/Anno4.exe'),
-                'res': '"2560x1440"',
             },
             'WINE_anno_1404_venice': {
                 'prefix': os.path.join(wine_path, 'Anno 1404'),
                 'cmd': os.path.join(wine_path, 'Anno 1404/drive_c/GOG Games/Anno 1404 Gold Edition/Addon.exe'),
-                'res': '"2560x1440"',
             },
             'WINE_braid': {
                 'prefix': os.path.join(wine_path, 'Braid'),
                 #'cmd_custom': '/usr/bin/wineconsole ' + os.path.join(media_path, 'platformer/Braid/Setup.bat'),
                 'cmd': os.path.join(wine_path, 'Braid/drive_c/Program Files (x86)/Braid/braid.exe'),
                 #'cmd_virtual': os.path.join(media_path, '0_d3dx9_redist/DXSETUP.exe'),
-                'res': '"2560x1440"',
                 'opt': '-language english',
             },
             # FIXME directx10 not supported in wine? (if support is ok 'very high' should not be greyed out)
@@ -1156,7 +1129,6 @@ class admin(base.base):
                 #'cmd_virtual': os.path.join(media_path, '0_d3dx9_redist/DXSETUP.exe'),
                 'cmd': os.path.join(wine_path, 'Crysis/drive_c/GOG Games/Crysis/Bin32/Crysis.exe'),
                 'opt': '-dx9',
-                'res': '"2560x1440"',
             },
             # install failed, copied from native win
             'WINE_dead_space': {
@@ -1164,13 +1136,11 @@ class admin(base.base):
                 #'media': [os.path.join(media_path, 'shooter/Dead Space/DEADSPACE.ISO')],
                 #'cmd_virtual': os.path.join(udisk_path, 'DEADSPACE/autorun.exe'),
                 'cmd': os.path.join(wine_path, 'Dead Space/drive_c/Program Files (x86)/Electronic Arts/Dead Space/Dead Space.exe'),
-                'res': '"2560x1440"',
             },
             'WINE_deponia': {
                 'prefix': os.path.join(wine_path, 'Deponia'),
                 #'cmd_virtual': os.path.join(media_path, 'adventures/Deponia/setup_deponia_3.3.1357_(16595)_(g).exe'),
                 'cmd': os.path.join(wine_path, 'Deponia/drive_c/GOG Games/Deponia/deponia.exe'),
-                'res': '"2560x1440"',
             },
             # FIXME menu is broken, but gameplay is fine: https://bugs.winehq.org/show_bug.cgi?id=2082
             'WINE_diablo': {
@@ -1222,7 +1192,6 @@ class admin(base.base):
                 'media': [os.path.join(media_path, 'rpg/Fable - The Lost Chapters/Fable The Lost Chapters.iso')],
                 'cmd_virtual': os.path.join(udisk_path, 'Fable Disk 1/setup.exe'),
                 'res': '"800x600"',
-                #'res': '"2560x1440"',
             },
             # Ultimate edition contains Dread Lords & both expansion packs: Dark Avatar & Twilight of the Arnor
             # FIXME even after switching back freetype hinting engine, some fonts are still screwed up
@@ -1239,33 +1208,34 @@ class admin(base.base):
                 #'cmd_virtual': os.path.join(media_path, '0_d3dx9_redist/DXSETUP.exe'),
                 'cmd': os.path.join(wine_path, 'Galactic Civilizations II Ultimate Edition/drive_c/GOG Games/Galactic Civilizations II/GalCiv2.exe'),
                 'env': 'FREETYPE_PROPERTIES="truetype:interpreter-version=35"',
-                'res': '"2560x1440"',
             },
             'WINE_galciv2_dark_avatar': {
                 'prefix': os.path.join(wine_path, 'Galactic Civilizations II Ultimate Edition'),
                 'cmd': os.path.join(wine_path, 'Galactic Civilizations II Ultimate Edition/drive_c/GOG Games/Galactic Civilizations II/DarkAvatar/GC2DarkAvatar.exe'),
                 'env': 'FREETYPE_PROPERTIES="truetype:interpreter-version=35"',
-                'res': '"2560x1440"',
             },
             'WINE_galciv2_twilight_of_the_arnor': {
                 'prefix': os.path.join(wine_path, 'Galactic Civilizations II Ultimate Edition'),
                 'cmd': os.path.join(wine_path, 'Galactic Civilizations II Ultimate Edition/drive_c/GOG Games/Galactic Civilizations II/Twilight/GC2TwilightOfTheArnor.exe'),
                 'env': 'FREETYPE_PROPERTIES="truetype:interpreter-version=35"',
-                'res': '"2560x1440"',
             },
             'WINE_gobliiins': {
                 'prefix': os.path.join(wine_path, 'Gobliiins'),
                 #'cmd_virtual': os.path.join(media_path, 'adventures/Gobliiins/setup_gobliiins_2.1.0.64.exe'),
-                'cmd': os.path.join(wine_path, 'Gobliiins\drive_c\GOG Games\Gobliiins\ScummVM\scummvm.exe'),
+                'cmd': os.path.join(wine_path, 'Gobliiins/drive_c/GOG Games/Gobliiins/ScummVM/scummvm.exe'),
                 'opt': '-c "C:\GOG Games\Gobliiins\gobliiins1.ini" gobliiins1',
-                'res': '"2560x1440"',
             },
             # FIXME slow, try medium settings
             'WINE_grim_dawn': {
                 'prefix': os.path.join(wine_path, 'Grim Dawn'),
                 #'cmd_virtual': os.path.join(media_path, 'rpg/Grim Dawn/setup_grim_dawn_1.0.4.0_hotfix_1_(17257)_(g).exe'),
                 'cmd': os.path.join(wine_path, 'Grim Dawn/drive_c/GOG Games/Grim Dawn/Grim Dawn.exe'),
-                'res': '"2560x1440"',
+            },
+            'WINE_indiana_jones_atlantis': {
+                'prefix': os.path.join(wine_path, 'Indiana Jones and the Fate of Atlantis'),
+                #'cmd_virtual': os.path.join(media_path, 'adventures/Indiana Jones and the Fate of Atlantis/setup_indiana_jones_and_the_fate_of_atlantis_2.1.0.8.exe'),
+                'cmd': os.path.join(wine_path, 'Indiana Jones and the Fate of Atlantis/drive_c/GOG Games/Indiana Jones and the Fate of Atlantis/ScummVM/scummvm.exe'),
+                'opt': '-c "C:\GOG Games\Indiana Jones and the Fate of Atlantis\Atlantis.ini" atlantis',
             },
             'WINE_machinarium': {
                 'prefix': os.path.join(wine_path, 'Machinarium'),
@@ -1280,7 +1250,6 @@ class admin(base.base):
                 #'cmd_virtual': os.path.join(udisk_path, 'Mass Effect/setup.exe'),
                 #'cmd_virtual': os.path.join(media_path, 'rpg/Mass Effect/1.02 patch & crack/MassEffect_EFIGS_1.02.exe'),
                 'cmd': os.path.join(wine_path, 'Mass Effect/drive_c/Program Files (x86)/Mass Effect/MassEffectLauncher.exe'),
-                'res': '"2560x1440"',
             },
             # FIXME sound jitters
             'WINE_monkey_island1': {
@@ -1289,7 +1258,6 @@ class admin(base.base):
                 #'cmd_virtual': os.path.join(udisk_path, 'MISE/setup.exe'),
                 #'cmd_virtual': os.path.join(media_path, '0_d3dx9_redist/DXSETUP.exe'),
                 'cmd': os.path.join(wine_path, 'Monkey Island 1 - Secret of Monkey Island/drive_c/Program Files (x86)/Secret Of Monkey Island SE/MISE.exe'),
-                'res': '"2560x1440"',
             },
             # FIXME sound jitters (less than mi1)
             'WINE_monkey_island2': {
@@ -1297,7 +1265,6 @@ class admin(base.base):
                 'media': [os.path.join(media_path, 'adventures/Monkey Island 2 Special Edition/sr-mi2se.iso')],
                 #'cmd_virtual': os.path.join(udisk_path, 'MI2SE/Setup.exe'),
                 'cmd': os.path.join(wine_path, 'Monkey Island 2 - LeChucks Revenge/drive_c/Program Files (x86)/LucasArts/Monkey Island 2 LeChucks Revenge Special Edition/Monkey2.exe'),
-                'res': '"2560x1440"',
             },
             # GOG claims inofficial 1.05 patch is already included:
             # https://www.gog.com/forum/psychonauts/psychonauts_patch_1_05_retail_gog_and_other_dd_officially_unofficial_release/page4
@@ -1305,14 +1272,12 @@ class admin(base.base):
                 'prefix': os.path.join(wine_path, 'Psychonauts'),
                 #'cmd_virtual': os.path.join(media_path, 'platformer/Psychonauts/setup_psychonauts_2.2.0.13.exe'),
                 'cmd': os.path.join(wine_path, 'Psychonauts/drive_c/GOG Games/Psychonauts/Psychonauts.exe'),
-                'res': '"2560x1440"',
             },
             # FIXME slow
             'WINE_realmyst_masterpiece': {
                 'prefix': os.path.join(wine_path, 'RealMyst Masterpiece'),
                 #'cmd_virtual': os.path.join(media_path, 'adventures/RealMyst Masterpiece/setup_realmyst_masterpiece_edition_2.1.0.6.exe'),
                 'cmd': os.path.join(wine_path, 'RealMyst Masterpiece/drive_c/GOG Games/realMyst Masterpiece Edition/realMyst.exe'),
-                'res': '"2560x1440"',
             },
             # FIXME crash during game start
             # Key: TLAD-JPAC-PGHL-3PTB-32
@@ -1321,14 +1286,12 @@ class admin(base.base):
                 'media': [os.path.join(media_path, 'shooter/Return To Castle Wolfenstein/RZR-WOLF.iso')],
                 #'cmd_virtual': os.path.join(udisk_path, 'rtcw/Setup.exe'),
                 'cmd_virtual': os.path.join(wine_path, 'Return to Castle Wolfenstein/drive_c/Program Files (x86)/Return to Castle Wolfenstein/WolfSP.exe'),
-                'res': '"2560x1440"',
             },
             'WINE_siedler2': {
                 'prefix': os.path.join(wine_path, 'The Settlers II - 10th Anniversary'),
                 'media': [os.path.join(media_path, 'strategy/Die Siedler 2 (10th Anniversary Edition)/rld-sett2.iso')],
                 #'cmd_virtual': os.path.join(udisk_path, 'SettlersII/setup.exe'),
                 'cmd': os.path.join(wine_path, 'The Settlers II - 10th Anniversary/drive_c/Program Files (x86)/Ubisoft/Funatics/The Settlers II - 10th Anniversary/bin/S2DNG.exe'),
-                'res': '"2560x1440"',
             },
             'WINE_simtower': {
                 'prefix': os.path.join(wine_path, 'Simtower'),
@@ -1336,27 +1299,17 @@ class admin(base.base):
                 'cmd_virtual': os.path.join(wine_path, 'Simtower/drive_c/SIMTOWER/SIMTOWER.EXE'),
                 'res': '"1024x768"',
             },
-            'WINE_star_trek_elite_force': {
-                'prefix': os.path.join(wine_path, 'Star Trek Elite Force'),
-                'media': [os.path.join(media_path, 'shooter/Star Trek - Elite Force/cd.iso')],
-                #'cmd_virtual': os.path.join(udisk_path, 'ELITEFORCE/Setup.exe'),
-                #'cmd_virtual': os.path.join(media_path, 'shooter/Star Trek - Elite Force/eliteforcepatch1_2.exe'),
-                'cmd': os.path.join(wine_path, 'Star Trek Elite Force/drive_c/Program Files (x86)/Raven/Star Trek Voyager Elite Force/stvoy.exe'),
-                'res': '"1600x1200"',
-            },
             'WINE_the_book_of_unwritten_tales': {
                 'prefix': os.path.join(wine_path, 'The Book of Unwritten Tales'),
                 'media': [os.path.join(media_path, 'adventures/The Book of Unwritten Tales/BoUT.iso')],
                 #'cmd_virtual': os.path.join(udisk_path, 'BoUT/Setup.exe'),
                 'cmd': os.path.join(wine_path, 'The Book of Unwritten Tales/drive_c/Program Files (x86)/Unwritten Tales/bout.exe'),
-                'res': '"2560x1440"',
             },
             'WINE_the_book_of_unwritten_tales_2': {
                 'prefix': os.path.join(wine_path, 'The Book of Unwritten Tales 2'),
                 'media': [os.path.join(media_path, 'adventures/The Book of Unwritten Tales 2/BoUT2.iso')],
                 #'cmd_virtual': os.path.join(udisk_path, 'TBOUT2/setup.exe'),
                 'cmd': os.path.join(wine_path, 'The Book of Unwritten Tales 2/drive_c/Program Files (x86)/The Book of Unwritten Tales 2/Windows/BouT2.exe'),
-                'res': '"2560x1440"',
             },
             # FIXME resolution needs to be maxed with glide wrapper (bails out), old save games already work!
             'WINE_the_longest_journey': {
@@ -1366,13 +1319,11 @@ class admin(base.base):
                 #'cmd_virtual': os.path.join(media_path, 'adventures/The Longest Journey/tlj-patch-161.exe'),
                 'cmd': os.path.join(wine_path, 'The Longest Journey/drive_c/Program Files (x86)/Funcom/The Longest Journey/Game.exe'),
                 #'cmd': os.path.join(wine_path, 'The Longest Journey/drive_c/Program Files (x86)/Funcom/The Longest Journey/dgVoodooCpl.exe'),
-                'res': '"2560x1440"',
             },
             'WINE_the_whispered_world': {
                 'prefix': os.path.join(wine_path, 'The Whispered World'),
                 #'cmd_virtual': os.path.join(media_path, 'adventures/The Whispered World/setup_the_whispered_world_special_edition_2.1.0.11.exe'),
                 'cmd': os.path.join(wine_path, 'The Whispered World/drive_c/GOG Games/The Whispered World SE/twwse.exe'),
-                'res': '"2560x1440"',
             },
             # Key: 628G-GDKW-9B92-VXDZ
             'WINE_warcraft2': {
@@ -1388,7 +1339,6 @@ class admin(base.base):
                 #'cmd_virtual': os.path.join(media_path, 'strategy/Warcraft 3 - Reign of Chaos & Frozen Throne/Warcraft III eSK.exe'),
                 'cmd_virtual': os.path.join(wine_path, 'Warcraft III/drive_c/Program Files (x86)/Warcraft III Frozen Throne eSK/Warcraft III.exe'),
                 'opt': '-opengl -nativefullscr',
-                'res': '"2560x1440"',
             },
             # FIXME cutscenes are skipped (new 1.28 patch should resolve this, see https://bugs.winehq.org/show_bug.cgi?id=35651)
             # Frozen Throne Key: FN7MVD-HHMX-KYPMYD-FTHT-H99GY8
@@ -1397,41 +1347,17 @@ class admin(base.base):
                 #'cmd_virtual': os.path.join(media_path, 'strategy/Warcraft 3 - Reign of Chaos & Frozen Throne/Warcraft III eSK.exe'),
                 'cmd_virtual': os.path.join(wine_path, 'Warcraft III/drive_c/Program Files (x86)/Warcraft III Frozen Throne eSK/Frozen Throne.exe'),
                 'opt': '-opengl -nativefullscr',
-                'res': '"2560x1440"',
             },
             'WINE_worldofgoo': {
                 'prefix': os.path.join(wine_path, 'WorldOfGoo'),
                 #'cmd_virtual': os.path.join(media_path, 'simulator/World of Goo/WorldOfGooSetup.1.30.exe'),
                 #'cmd_virtual': os.path.join(media_path, '0_d3dx9_redist/DXSETUP.exe'),
                 'cmd': os.path.join(wine_path, 'WorldOfGoo/drive_c/Program Files (x86)/WorldOfGoo/WorldOfGoo.exe'),
-                'res': '"2560x1440"',
             },
         }
 
         ########################## Interface
-        import readline
-        class MyCompleter(object):
-            def __init__(self, options):
-                self.options = sorted(options)
-         
-            def complete(self, text, state):
-                if state == 0:  # on first trigger, build possible matches
-                    if text:  # cache matches (entries that start with entered text)
-                        self.matches = [s for s in self.options if text in s]
-                    else:  # no text entered, all matches possible
-                        self.matches = self.options[:]
-         
-                # return match indexed by state
-                try: 
-                    return self.matches[state]
-                except IndexError:
-                    return None
-         
-        completer = MyCompleter(games.keys())
-        readline.set_completer(completer.complete)
-        readline.parse_and_bind('tab: complete')
-
-        sel = input("Selection? Use TAB!: ")
+        sel = self.key_sel_if(games.keys())
         game = games[sel]
         # cd into exe dir, to avoid working directory issues
         xinit_cmd = 'cd "{0}" && /usr/bin/xinit'
@@ -1469,8 +1395,8 @@ class admin(base.base):
                 {2}
                 exit'''.format(game['prefix'], game['conf'] if 'conf' in game else '', game['cmd'])
 
-            self.dispatch('fluidsynth -si ' + os.path.join(dos_path, '0_soundfonts/Real_Font_V2.1.sf2'),
-                          blocking=False, daemon=True)
+            #self.dispatch('fluidsynth -si ' + os.path.join(dos_path, '0_soundfonts/Real_Font_V2.1.sf2'),
+            #              blocking=False, daemon=True)
 
             with open('/tmp/dosbox.conf', 'w') as dosbox_conf:
                 dosbox_conf.write(dosbox_conf_str)
@@ -1478,7 +1404,7 @@ class admin(base.base):
             self.dispatch(' '.join([xinit_cmd.format(dos_path), dosbox_cmd, '-- :1 vt8']))
 
             # FIXME fluidsynth is not properly killed, even with daemon=True
-            self.join(timeout=1)
+            #self.join(timeout=1)
             
         ##########################
         if 'LINUX' in sel:
@@ -1497,6 +1423,7 @@ class admin(base.base):
         bus = dbus.SystemBus()
         udisks2_manager_obj = bus.get_object('org.freedesktop.UDisks2', '/org/freedesktop/UDisks2/Manager')
         media = None
+        res = app.get('res', '"2560x1440"')
         xorg_conf_str = '''
         Section "Monitor"
             Identifier             "Monitor0"
@@ -1520,13 +1447,13 @@ class admin(base.base):
             Option                 "XkbModel"   "pc101"
             Option                 "XkbVariant" "nodeadkeys"
         EndSection
-        '''
+        '''.format(res)
 
         # cd into exe dir, to avoid working directory issues
         xinit_cmd = 'cd "{0}" && /usr/bin/xinit'
 
         with open('/tmp/xorg.conf', 'w') as xorg_conf:
-            xorg_conf.write(xorg_conf_str.format(app['res']))
+            xorg_conf.write(xorg_conf_str)
 
         # disable winemenubuilder to prevent programs from creating menu entries and file associations
         wine_cmd_common_prefix = '/usr/bin/env {1} WINEPREFIX="{0}" WINEDLLOVERRIDES=winemenubuilder.exe=d WINEDEBUG=warn'.format(app['prefix'], app['env'] if 'env' in app.keys() else '')
@@ -1534,7 +1461,7 @@ class admin(base.base):
         if self.ui.args.cfg:
             cmd = '{0} {1}'.format(wine_cmd_common_prefix, '/usr/bin/winecfg')
         else:
-            cmd_type = [k for k,v in app.items() if k.startswith('cmd')][0]
+            cmd_type = next(k for k,v in app.items() if k.startswith('cmd'))
             wine_cmd_virtual_desktop = 'explorer /desktop=name'
             wine_cmd_opt = app['opt'] if 'opt' in app.keys() else ''
             
@@ -1542,7 +1469,7 @@ class admin(base.base):
             app_cmd = app[cmd_type]
             working_dir = os.path.dirname(app_cmd)
             if cmd_type == 'cmd_virtual':
-                wine_cmd = ' '.join([wine_cmd_common, wine_cmd_virtual_desktop + ',' + app['res'], '"' +  app_cmd + '"', wine_cmd_opt])
+                wine_cmd = ' '.join([wine_cmd_common, wine_cmd_virtual_desktop + ',' + res, '"' +  app_cmd + '"', wine_cmd_opt])
             else:
                 if cmd_type == 'cmd_custom':
                     wine_cmd_common = '{0} {1}'.format(wine_cmd_common_prefix, app['cmd_custom'])
@@ -1573,7 +1500,7 @@ class admin(base.base):
         else:
             self.dispatch(cmd)
 
-    @ui.log_exec_time
+    @pylon.log_exec_time
     def admin_kernel(self):
         # ====================================================================
         'scripting stuff to build kernels'
@@ -1636,14 +1563,15 @@ class admin(base.base):
                 '--exclude="/*.iso"',
             ]
             if self.ui.args.small:
-                rsync_exclude.extend(rsync_exclude_small)
+                rsync_exclude += rsync_exclude_small 
             dry_run = ''
             if not self.ui.args.force:
                 self.ui.info('Use -f to apply sync!')
                 dry_run = 'n'
-            self.dispatch('/usr/bin/rsync -av' + dry_run + ' --modify-window 1 --no-perms --no-owner --no-group --inplace --delete {0}/ {1} {2}'.format(key_image,
-                                                                                                                                              key_mp,
-                                                                                                                                              ' '.join(rsync_exclude)),
+            self.dispatch('/usr/bin/rsync -av{3} --modify-window 1 --no-perms --no-owner --no-group --inplace --delete {0}/ {1} {2}'.format(key_image,
+                                                                                                                                            key_mp,
+                                                                                                                                            ' '.join(rsync_exclude),
+                                                                                                                                            dry_run),
                           output='both')
 
         try:
@@ -1747,34 +1675,18 @@ class admin(base.base):
         'update portage'
 
         if self.ui.args.sync:
-            self.ui.info('Rebasing my gentoo mirror to upstream...')
             git_cmd = 'cd /usr/portage && /usr/bin/git '
-
-            self.dispatch(git_cmd + 'stash',
-                          output='stderr')
-            self.dispatch(git_cmd + 'pull -r upstream master',
-                          output='stderr')
-            try:
-                self.dispatch(git_cmd + '--no-pager stash show',
-                              output=None)
-            except self.exc_class:
-                pass
-            else:
-                try:
-                    self.dispatch(git_cmd + 'stash pop',
-                                  output='stderr')
-                except:
-                    raise self.exc_class('re-applying local changes to new portage tree failed!')
-                    
-            # automatically push result of successful rebase only on diablo (origin remote uses ssh protocol)
-            # sync is always started manually from root shell, thus ssh-agent should provide key
-            if self.ui.hostname == 'diablo':
-                self.dispatch(git_cmd + 'push origin master',
-                              output='stderr')
+            self.ui.info('Synchronizing repositories...')
             self.dispatch('/usr/sbin/emaint sync -A',
                           output='stderr')
-            # FIXME override metadata-md5-or-flat cache method for gentoo mirror, to include local overlay ebuilds
-            self.dispatch('CACHE_METHOD="/usr/portage/ parse|ebuild*" /usr/bin/eix-update',
+            
+            # - automatically push result of successful rebase only on diablo (origin remote uses ssh protocol)
+            # - sync is always started manually from root shell, thus ssh-agent should provide key
+            # - push all local branches (pull requests!) not only master
+            if self.ui.hostname == 'diablo':
+                self.dispatch(git_cmd + 'push origin',
+                              output='stderr')
+            self.dispatch('/usr/bin/eix-update',
                           output='stderr')
         
         self.ui.info('Checking for updates...')
@@ -1799,7 +1711,7 @@ class admin(base.base):
             self.dispatch('/usr/bin/emerge @preserved-rebuild',
                           output='nopipes')
 
-    @ui.log_exec_time
+    @pylon.log_exec_time
     def admin_wine(self):
         # ====================================================================
         'common wine app loading script'
@@ -1811,7 +1723,6 @@ class admin(base.base):
                 'cmd_virtual': '/mnt/work/software/split/hjsplit.exe',
                 #'cmd_custom': '/usr/bin/msiexec /i /mnt/work/software/Hyperlapse.inst/Hyperlapse-Pro-for-64-bit-Windows_1.6-116-d4cb262-2.msi',
                 #'cmd': '/mnt/work/software/Hyperlapse/drive_c/Program Files (x86)/Microsoft Hyperlapse Pro/Microsoft.Research.Hyperlapse.Desktop.exe',
-                'res': '"2560x1440"',
             },
             # FIXME err:module:import_dll Library MSVCR120_CLR0400.dll (which is needed by L"C:\\windows\\Microsoft.NET\\Framework64\\v4.0.30319\\clr.dll") not found
             # try next: installing dotnet 4.0 before 4.5, otherwise run it on company notebook
@@ -1820,31 +1731,9 @@ class admin(base.base):
                 'cmd_virtual': '/mnt/work/software/Hyperlapse.inst/NDP452-KB2901907-x86-x64-AllOS-ENU.exe',
                 #'cmd_custom': '/usr/bin/msiexec /i /mnt/work/software/Hyperlapse.inst/Hyperlapse-Pro-for-64-bit-Windows_1.6-116-d4cb262-2.msi',
                 #'cmd': '/mnt/work/software/Hyperlapse/drive_c/Program Files (x86)/Microsoft Hyperlapse Pro/Microsoft.Research.Hyperlapse.Desktop.exe',
-                'res': '"2560x1440"',
             },
         }
-
-        import readline
-        class MyCompleter(object):
-            def __init__(self, options):
-                self.options = sorted(options)
-            def complete(self, text, state):
-                if state == 0:  # on first trigger, build possible matches
-                    if text:  # cache matches (entries that start with entered text)
-                        self.matches = [s for s in self.options if text in s]
-                    else:  # no text entered, all matches possible
-                        self.matches = self.options[:]
-                # return match indexed by state
-                try: 
-                    return self.matches[state]
-                except IndexError:
-                    return None
-        completer = MyCompleter(apps.keys())
-        readline.set_completer(completer.complete)
-        readline.parse_and_bind('tab: complete')
-        sel = input("Selection? Use TAB!: ")
-        
-        self.wine_wrapper(apps[sel])
+        self.wine_wrapper(apps[self.key_sel_if(apps.keys())])
             
     def admin_wrap(self):
         # ====================================================================
@@ -1940,7 +1829,28 @@ class admin(base.base):
         else:
             self.ui.warning('No other device chroot environment should be open while doing rsync, close them...')
 
+    def key_sel_if(self, keys):
+        import readline
+        class MyCompleter(object):
+            def __init__(self, options):
+                self.options = sorted(options)
+            def complete(self, text, state):
+                if state == 0:  # on first trigger, build possible matches
+                    if text:  # cache matches (entries that start with entered text)
+                        self.matches = [s for s in self.options if text in s]
+                    else:  # no text entered, all matches possible
+                        self.matches = self.options[:]
+                # return match indexed by state
+                try: 
+                    return self.matches[state]
+                except IndexError:
+                    return None
+        completer = MyCompleter(keys)
+        readline.set_completer(completer.complete)
+        readline.parse_and_bind('tab: complete')
+        return input("Selection? Use TAB!: ")
+
 if __name__ == '__main__':
-    app = admin(job_class=job.job,
+    app = admin(job_class=pylon.job.job,
                 ui_class=ui)
     app.run()
