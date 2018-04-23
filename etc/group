@@ -41,6 +41,7 @@ openvpn:x:1006:
 postmaster:x:103:
 vboxusers:x:102:schweizer
 polkituser:x:101:
+plugdev:x:999:schweizer
 lock:x:998:
 dovecot:x:97:
 dovenull:x:109:
