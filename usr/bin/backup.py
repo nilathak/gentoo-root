@@ -27,7 +27,7 @@ tasks = {
          'btrfs', '10d2m'),
 
         # <mount via KDE>
-        # backup.py exec -t external --mail && admin.py check_btrfs -o external --mail && umount /run/media/schweizer/external && hdparm -y `findfs UUID=3c196e96-d46c-4a9c-9583-b79c707678fc`
+        # killall -s SIGHUP smartd && backup.py exec -t external --mail && admin.py check_btrfs -o external --mail && umount /run/media/schweizer/external && cryptsetup close /dev/mapper/luks-3c196e96-d46c-4a9c-9583-b79c707678fc && hdparm -y `findfs UUID=3c196e96-d46c-4a9c-9583-b79c707678fc`
         ('diablo_external',
          '/mnt/work/backup/online/diablo',
          '/run/media/schweizer/external',

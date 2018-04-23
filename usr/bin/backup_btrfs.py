@@ -273,7 +273,7 @@ class backup_btrfs(pylon.base.base):
         pass
 
 if __name__ == '__main__':
-    ## TODO testcase
+    ## FIXME testcase
     ## ==========================
     #src_test_ts = [
     #    #ts_now - datetime.timedelta(hours=10),
