@@ -848,11 +848,8 @@ class admin(pylon.base.base):
         # ====================================================================
         'check portage sanity'
 
-        self.ui.info('Checking for vanished unstable versions...')
-        try:
-            self.dispatch('EIX_LIMIT=0 /usr/bin/eix -I | grep "^\[?"')
-        except self.exc_class:
-            pass
+        self.ui.info('Local changes to gentoo repo...')
+        self.dispatch('cd /usr/portage && /usr/bin/git status -s')
         
         self.ui.info('Checking for potential vulnerabilities...')
         try:
@@ -868,7 +865,16 @@ class admin(pylon.base.base):
          
         self.ui.info('Checking for obsolete package.* file entries...')
         try:
-            self.dispatch('/usr/bin/eix-test-obsolete brief')
+            env = ('EIX_LIMIT=0',
+                   # manually clean-up mask file, an upstream mask suddenly making mine redundant rarely happens
+                   'REDUNDANT_IF_IN_MASK=false',
+                   'REDUNDANT_IF_MASK_NO_CHANGE=false',
+                   # only report a redundant keywords entry if an installed version is not masked
+                   'REDUNDANT_IF_NO_CHANGE=+some-installed',
+                   # report obsolete use configurations for uninstalled packages
+                   'REDUNDANT_IF_IN_USE=-some',
+            )
+            self.dispatch('{0} /usr/bin/eix-test-obsolete'.format(' '.join(env)))
         except self.exc_class:
             pass
          
@@ -876,20 +882,28 @@ class admin(pylon.base.base):
     def admin_check_repos(self):
         # ====================================================================
         'report state of administrative git repositories (+ optional rebase)'
-        # FIXME
-        # - implement fast MD5 check to determine if file is not needed in repo anymore (finish md5 check in cruft.py first, then re-use here)
+        # - no full absolute file path for status reporting is intended => ensures native git commands are only executed in matching repo dir
         # REBASE FLOW HOWTO
-        # - host MUST NEVER be merged onto master; ALWAYS operate on master directly, or just cherry-pick from host to master
-        # - rebasing host with remote master ensures a minimal diffset ("superimposing" files are auto-removed if no longer needed)
-        # - avoid host branches on github, since host branches tend to include security-sensitive files
+        # - host MUST NEVER be merged onto master; ALWAYS operate on master directly, or cherry-pick from host to master
+        # - rebasing host with remote master ensures a minimal diffset after cherry-picking
+        # - avoid host branches on github, since host branches include security-sensitive files
 
-        repos = [
-            '/',
+        repos = (
+            ('/', True),
             # enables quick & dirty cruft development with emacs
-            '/usr/bin',
-            ]
+            ('/usr/bin', False),
+        )
 
-        for repo in repos:
+        import gentoolkit.equery.check
+        import gentoolkit.helpers
+        import portage
+        gtk_check = gentoolkit.equery.check.VerifyContents()
+        gtk_find = gentoolkit.helpers.FileOwner()
+        trees = portage.create_trees()
+        vardb = trees[portage.settings['EROOT']]["vartree"].dbapi
+        vardb_path = os.path.join(portage.settings['EROOT'], portage.const.VDB_PATH)
+        
+        for repo,baseline_check in repos:
 
             if self.ui.args.rebase:
                 self.ui.info('Rebasing repo at {0}...'.format(repo))
@@ -941,22 +955,6 @@ class admin(pylon.base.base):
                 if host_files_diff:
                     host_files_stat = self.dispatch(git_cmd + 'diff ' + self.ui.hostname + ' --name-status -- ' + ' '.join(host_files),
                                                     output=None, passive=True).stdout
-
-                    #import gentoolkit.equery.check
-                    #import gentoolkit.helpers
-                    #import portage
-                    #gtk_check = gentoolkit.equery.check.VerifyContents()
-                    #gtk_find = gentoolkit.helpers.FileOwner()
-                    # 
-                    ## assume standard portage tree locatation at /
-                    #trees = portage.create_trees()
-                    #vardb = trees['/']["vartree"].dbapi
-                    # 
-                    #host_file_abs = map(lambda x: '/' + x, host_files)
-                    #affected_pkg = map(lambda x: x.mycpv, vardb._owners.get_owners(list(host_file_abs)))
-                    #print(list(affected_pkg))
-
-                    
                     self.ui.info('Host status:' + os.linesep + os.linesep.join(host_files_stat))
                 if master_files_diff:
                     master_files_stat = self.dispatch(git_cmd + 'diff origin/master --name-status -- ' + ' '.join(master_files),
@@ -979,6 +977,21 @@ class admin(pylon.base.base):
                                                               os.path.join(clone_path, f)),
                                           output='stderr')
 
+                # all portage files in config repo should differ from gentoo baseline, report otherwise (should be deleted from repo manually)
+                if baseline_check:
+                    self.ui.info('Comparing portage files in repo {0} against baseline...'.format(repo))
+                    repo_files = list(set(host_files) | set(master_files))
+                    repo_files_abs = ['/' + x for x in repo_files]
+                    affected_pkgs = {str(x[0]) for x in gtk_find(repo_files_abs)}
+                    for pkg in affected_pkgs:
+                        check = {k:v for k,v in vardb._dblink(pkg).getcontents().items() if k in repo_files_abs}
+                        (n_passed, n_checked, errs) = gtk_check._run_checks(check)
+                        if n_passed:
+                            err_paths = {x.split()[0] for x in errs}
+                            passed_paths = set(check.keys()) - err_paths
+                            for path in passed_paths:
+                                self.ui.warning('File is equivalent to gentoo baseline: ' + path)
+                            
                 # optionally display repo files
                 if self.ui.args.list_files:
                     if host_files:
@@ -1268,6 +1281,31 @@ class admin(pylon.base.base):
             },
             # GOG claims inofficial 1.05 patch is already included:
             # https://www.gog.com/forum/psychonauts/psychonauts_patch_1_05_retail_gog_and_other_dd_officially_unofficial_release/page4
+            # FIXME controller:
+            # profile: drive_c/GOG Games/Psychonauts/Profiles/Profile 1/Profile 1- Raz.ini
+            # xboxdrv --evdev /dev/input/event5 --mimic-xpad --evdev-absmap ABS_X=x1,ABS_Y=y1,ABS_HAT0X=x2,ABS_HAT0Y=y2 --evdev-keymap BTN_TRIGGER=a,BTN_THUMB=b,BTN_TOP=x,BTN_TOP2=y,BTN_BASE=lb,BTN_BASE2=rb,BTN_BASE3=start,BTN_BASE4=back
+            #  
+            # disable kernel options again afterwards:
+            # 1500c1500
+            # < # CONFIG_INPUT_JOYDEV is not set
+            # ---
+            # > CONFIG_INPUT_JOYDEV=y
+            # 1509c1509,1533
+            # < # CONFIG_INPUT_JOYSTICK is not set
+            # ---
+            # > CONFIG_INPUT_JOYSTICK=y
+            # > CONFIG_JOYSTICK_ANALOG=y
+            # > CONFIG_JOYSTICK_SIDEWINDER=y
+            # > CONFIG_JOYSTICK_XPAD=y
+            # 1512c1536,1556
+            # < # CONFIG_INPUT_MISC is not set
+            # ---
+            # > CONFIG_INPUT_MISC=y
+            # > CONFIG_INPUT_UINPUT=y
+            # 1520c1564,1568
+            # < # CONFIG_GAMEPORT is not set
+            # ---
+            # > CONFIG_GAMEPORT=y
             'WINE_psychonauts': {
                 'prefix': os.path.join(wine_path, 'Psychonauts'),
                 #'cmd_virtual': os.path.join(media_path, 'platformer/Psychonauts/setup_psychonauts_2.2.0.13.exe'),
@@ -1560,6 +1598,7 @@ class admin(pylon.base.base):
                 '--exclude="/diablo"',
             ]
             rsync_exclude_small = [
+                '--include="/systemrescuecd*.iso"',
                 '--exclude="/*.iso"',
             ]
             if self.ui.args.small:
@@ -1624,12 +1663,14 @@ class admin(pylon.base.base):
                         decrypt_uuid = decrypt_obj.Get('org.freedesktop.UDisks2.Block', 'IdUUID', dbus_interface='org.freedesktop.DBus.Properties')
                         decrypt_device = self.dispatch('/sbin/findfs UUID=' + decrypt_uuid,
                                                        output=None, passive=True).stdout[0]
-                        try:
-                            self.dispatch('/sbin/fsck.ext3 -p ' + decrypt_device, output=None)
-                        except Exception as e:
-                            print(e)
-                            time.sleep(10)
+                        # udisks now automatically mounts unlocked loopdevice => unmount for fs check
                         decrypt = dbus.Interface(decrypt_obj, 'org.freedesktop.UDisks2.Filesystem')
+                        decrypt.Unmount({})
+                        try:
+                            self.dispatch('/sbin/fsck.ext3 -fp ' + decrypt_device, output=None)
+                        except Exception as e:
+                            self.ui.error(e)
+                            time.sleep(10)
                         mount_path = decrypt.Mount({})
                         self.dispatch('/usr/bin/dolphin ' + mount_path, output=None)
                         decrypt.Unmount({})
@@ -1674,17 +1715,17 @@ class admin(pylon.base.base):
         # ====================================================================
         'update portage'
 
+        # FIXME add emerge -pv @live-rebuild???
+        
         if self.ui.args.sync:
-            git_cmd = 'cd /usr/portage && /usr/bin/git '
             self.ui.info('Synchronizing repositories...')
             self.dispatch('/usr/sbin/emaint sync -A',
                           output='stderr')
             
             # - automatically push result of successful rebase only on diablo (origin remote uses ssh protocol)
-            # - sync is always started manually from root shell, thus ssh-agent should provide key
             # - push all local branches (pull requests!) not only master
             if self.ui.hostname == 'diablo':
-                self.dispatch(git_cmd + 'push origin',
+                self.dispatch('cd /usr/portage && /usr/bin/git push origin',
                               output='stderr')
             self.dispatch('/usr/bin/eix-update',
                           output='stderr')
@@ -1851,6 +1892,6 @@ class admin(pylon.base.base):
         return input("Selection? Use TAB!: ")
 
 if __name__ == '__main__':
-    app = admin(job_class=pylon.job.job,
+    app = admin(job_class=pylon.gentoo.job.job,
                 ui_class=ui)
     app.run()
