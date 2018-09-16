@@ -110,7 +110,7 @@ class admin(pylon.base.base):
             for percent in (x-1 for x in pylon.unique_logspace(10, 79)):
                 self.ui.info('Balancing metadata + data chunks with {1}% usage for {0}...'.format(label, percent))
                 self.dispatch('/usr/bin/nice -10 /sbin/btrfs balance start -musage={0} -dusage={0} {1}'.format(percent, mp))
-            
+
             self.ui.info('Scrubbing {0}...'.format(label))
             self.dispatch('/usr/bin/nice -10 /sbin/btrfs scrub start -Bd ' + mp)
 
@@ -163,8 +163,6 @@ class admin(pylon.base.base):
     @pylon.log_exec_time
     def admin_check_docs(self):
         # ====================================================================
-        'check data consistency on docs'
-
         # FIXME ensure Octave compatibility:
         # find /mnt/docs/0_sort/ -type f | grep '.*\.m$'
         # /mnt/docs/education/thesis/fpcore/units/fpcoreblks/source/matlab/fpcoreblks/fpcoreblks/slblocks.m
@@ -177,6 +175,7 @@ class admin(pylon.base.base):
         # /mnt/docs/systems/dsp/noiseshaping
         # ??? mnt/docs/systems/modeling/matlab/MSystem
         # ??? mnt/docs/systems/modeling/matlab/mdt
+        'check data consistency on docs'
         
         dir_exceptions = (
             )
@@ -404,6 +403,7 @@ class admin(pylon.base.base):
         'check image metadata (silently convert to xmp)'
 
         # FIXME
+        # - digikam even needed compared to gwenview? searching for dupes, camera download
         # - consistently apply date & geotag metadata => best search possibilites (or remove gps data to allow easy publication)
         #   - delete geotagging metadata? identify incriminating XMP metadata and remove?
         # - exiftool file renaming
@@ -715,8 +715,28 @@ class admin(pylon.base.base):
         # ====================================================================
         'ensure network settings are sane'
 
-        self.ui.debug('Searching for open TCP/UDP ports...')
-        self.dispatch('nmap -sT -O localhost').stdout
+        self.ui.info('Searching for open TCP/UDP ports...')
+
+        # FIXME test output of -sN; -sF; -sX; -sO
+        
+        xml_lines = self.dispatch('nmap -sSU -O localhost -oX -',
+                                  output='stdout').stdout
+
+        import xml.dom.minidom
+        
+        from xml.dom.minidom import DOMImplementation
+        #imp = xml.dom.minidom.DOMImplementation()
+        #doctype = imp.createDocumentType(
+        #    qualifiedName='nmap.dtd',
+        #    publicId='', 
+        #    systemId='/usr/share/nmap/nmap.dtd',
+        #)
+        dom = xml.dom.minidom.parseString(os.linesep.join(xml_lines))
+        ports_node = dom.getElementsByTagName("ports")[0]
+        port_nodes = ports_node.getElementsByTagName("port")
+        state_nodes = ports_node.getElementsByTagName("state")
+        
+        print(port_list)
         
         # FIXME search for open ports with nmap and filter known ones
         # currently open ports:
@@ -848,8 +868,25 @@ class admin(pylon.base.base):
         # ====================================================================
         'check portage sanity'
 
-        self.ui.info('Local changes to gentoo repo...')
-        self.dispatch('cd /usr/portage && /usr/bin/git status -s')
+        import portage
+        trees = portage.create_trees()
+        vardb = trees[portage.settings['EROOT']]["vartree"].dbapi
+        build_times = list()
+        for pkg in vardb.cpv_all():
+            build_time = int(vardb.aux_get(pkg, ['BUILD_TIME'])[0])
+            build_times.append((pkg, build_time))
+        import operator
+        build_times.sort(key = operator.itemgetter(1), reverse=True)
+        not_rebuilt_since = [x for x in build_times if time.time() - x[1] > 3600*24*365]
+        if not_rebuilt_since:
+            self.ui.warning('{0} packages have not been compiled for 6 months!'.format(len(not_rebuilt_since)))
+            for x in not_rebuilt_since:
+                self.ui.ext_info('{0} - {1}'.format(time.ctime(x[1]), x[0]))
+
+        import _emerge.actions
+        for repo in _emerge.actions.load_emerge_config().target_config.settings.repositories:
+            self.ui.info('Checking {0} repository for local modifications...'.format(repo.name))
+            self.dispatch('cd {0} && /usr/bin/git status -s'.format(repo.location))
         
         self.ui.info('Checking for potential vulnerabilities...')
         try:
@@ -859,6 +896,7 @@ class admin(pylon.base.base):
          
         self.ui.info('Performing useful emaint commands...')
         try:
+            self.dispatch('/usr/sbin/emaint -f all')
             self.dispatch('/usr/sbin/emaint -c all')
         except self.exc_class:
             pass
@@ -881,11 +919,10 @@ class admin(pylon.base.base):
     @pylon.log_exec_time
     def admin_check_repos(self):
         # ====================================================================
-        'report state of administrative git repositories (+ optional rebase)'
+        'report state of administrative git repositories'
         # - no full absolute file path for status reporting is intended => ensures native git commands are only executed in matching repo dir
-        # REBASE FLOW HOWTO
+        # FLOW HOWTO
         # - host MUST NEVER be merged onto master; ALWAYS operate on master directly, or cherry-pick from host to master
-        # - rebasing host with remote master ensures a minimal diffset after cherry-picking
         # - avoid host branches on github, since host branches include security-sensitive files
 
         repos = (
@@ -910,7 +947,7 @@ class admin(pylon.base.base):
                 git_cmd = 'cd ' + repo + ' && /usr/bin/git '
                 self.dispatch(git_cmd + 'stash',
                               output='stderr')
-                self.dispatch(git_cmd + 'pull -r',
+                self.dispatch(git_cmd + 'pull --no-edit',
                               output='both')
                 try:
                     self.dispatch(git_cmd + '--no-pager stash show',
@@ -962,12 +999,14 @@ class admin(pylon.base.base):
                     self.ui.info('Master status:' + os.linesep + os.linesep.join(master_files_stat))
 
                     # export master changes to avoid checking out master branch instead of host branch
+                    # ensure https protocol is used for origin on non-diablo hosts
                     if host_files:
-                        url = self.dispatch(git_cmd + 'config --get remote.origin_https.url',
+                        url = self.dispatch(git_cmd + 'config --get remote.origin.url',
                                             output=None, passive=True).stdout[0]
                         clone_path = '/tmp/' + os.path.basename(url)
                         self.ui.info('Preparing temporary master repo for {0} into {1}...'.format(repo, clone_path))
                         try:
+                            self.dispatch('/bin/rm -rf {0}'.format(clone_path))
                             self.dispatch(git_cmd + 'clone {0} {1}'.format(url, clone_path),
                                           output='stdout')
                         except self.exc_class:
@@ -1075,14 +1114,6 @@ class admin(pylon.base.base):
                            fullresolution=1280x1024''',
                 'cmd': 'call PINBALL.EXE',
             },
-            # FIXME replace with GOG?
-            'DOS_the_7th_guest': {
-                'prefix': os.path.join(dos_path, 'The 7th Guest'),
-                'conf': '''[cpu]
-                           cycles=10000''',
-                'cmd': '''imgmount D "{0}/adventures/The 7th Guest/t7g_1.iso" -t iso
-                          call t7g'''.format(media_path),
-            },
             'DOS_warcraft1': {
                 'prefix': os.path.join(dos_path, 'Warcraft I'),
                 'conf': '''[cpu]
@@ -1098,6 +1129,12 @@ class admin(pylon.base.base):
             'DOS_xcom2': {
                 'prefix': os.path.join(dos_path, 'XCOM 2'),
                 'cmd': 'call terrorcd',
+            },
+            # - in-game MT32 driver (mt32mpu.adv configured in GROOVIE.INI) is sub-standard, SCUMMVM MT32 emulator with local ROMs sounds better
+            # - ensure 'gm_device=null' is set in game-specific scummvm options, and no midi driver loading screen appears at start
+            # FIXME volume of MT32 emulator cannot be controlled independently of other sounds => music too quiet
+            'LINUX_the_7th_guest': {
+                'cmd': '/mnt/games/linux/The 7th Guest/start.sh',
             },
             # ~/.local/share/doublefine/dott/
             'LINUX_day_of_the_tentacle': {
@@ -1186,8 +1223,12 @@ class admin(pylon.base.base):
                 'cmd_virtual': os.path.join(wine_path, 'Edna Bricht Aus/drive_c/Program Files (x86)/Xider/Edna Bricht Aus/EbaMain.exe'),
                 'res': '"800x600"',
            },
-            # FIXME bails out with page fault (staging, non-staging, d3d9, non-d3d9)
+            # FIXME texture compression bug (-C option workaround): https://bugs.winehq.org/show_bug.cgi?id=35194
+            # FIXME -C option needed anymore in wine-3.14? https://www.phoronix.com/scan.php?page=news_item&px=Wine-3.14-Released
             # Key: 035921-492715-312032-5217
+            # - copy EMPEROR.EXE from media folder for nocd crack
+            # - only 4:3 resolutions are supported without cropping (http://www.wsgf.org/dr/emperor-battle-dune)
+            # - highest 4:3 resolution before game starts bailing out: 1600x1200 (entered in system.reg)
             'WINE_emperor': {
                 'prefix': os.path.join(wine_path, 'Emperor'),
                 'media': [os.path.join(media_path, 'strategy/Emperor/Atreides.iso'),
@@ -1197,7 +1238,7 @@ class admin(pylon.base.base):
                 #'cmd_virtual': os.path.join(udisk_path, 'EMPEROR1/SETUP.EXE'),
                 #'cmd_virtual': os.path.join(media_path, 'strategy/Emperor/EM109EN.EXE'),
                 'cmd': os.path.join(wine_path, 'Emperor/drive_c/Westwood/Emperor/EMPEROR.EXE'),
-                'res': '"1600x1200"',
+                'opt': '-C',
             },
             # FIXME serial cannot be entered, first field is limited to only 4 chars !?! 
             'WINE_fable': {
@@ -1284,28 +1325,6 @@ class admin(pylon.base.base):
             # FIXME controller:
             # profile: drive_c/GOG Games/Psychonauts/Profiles/Profile 1/Profile 1- Raz.ini
             # xboxdrv --evdev /dev/input/event5 --mimic-xpad --evdev-absmap ABS_X=x1,ABS_Y=y1,ABS_HAT0X=x2,ABS_HAT0Y=y2 --evdev-keymap BTN_TRIGGER=a,BTN_THUMB=b,BTN_TOP=x,BTN_TOP2=y,BTN_BASE=lb,BTN_BASE2=rb,BTN_BASE3=start,BTN_BASE4=back
-            #  
-            # disable kernel options again afterwards:
-            # 1500c1500
-            # < # CONFIG_INPUT_JOYDEV is not set
-            # ---
-            # > CONFIG_INPUT_JOYDEV=y
-            # 1509c1509,1533
-            # < # CONFIG_INPUT_JOYSTICK is not set
-            # ---
-            # > CONFIG_INPUT_JOYSTICK=y
-            # > CONFIG_JOYSTICK_ANALOG=y
-            # > CONFIG_JOYSTICK_SIDEWINDER=y
-            # > CONFIG_JOYSTICK_XPAD=y
-            # 1512c1536,1556
-            # < # CONFIG_INPUT_MISC is not set
-            # ---
-            # > CONFIG_INPUT_MISC=y
-            # > CONFIG_INPUT_UINPUT=y
-            # 1520c1564,1568
-            # < # CONFIG_GAMEPORT is not set
-            # ---
-            # > CONFIG_GAMEPORT=y
             'WINE_psychonauts': {
                 'prefix': os.path.join(wine_path, 'Psychonauts'),
                 #'cmd_virtual': os.path.join(media_path, 'platformer/Psychonauts/setup_psychonauts_2.2.0.13.exe'),
@@ -1318,10 +1337,12 @@ class admin(pylon.base.base):
                 'cmd': os.path.join(wine_path, 'RealMyst Masterpiece/drive_c/GOG Games/realMyst Masterpiece Edition/realMyst.exe'),
             },
             # FIXME crash during game start
+            # tried dx9 -> didn't work
             # Key: TLAD-JPAC-PGHL-3PTB-32
             'WINE_return_to_castle_wolfenstein': {
                 'prefix': os.path.join(wine_path, 'Return to Castle Wolfenstein'),
                 'media': [os.path.join(media_path, 'shooter/Return To Castle Wolfenstein/RZR-WOLF.iso')],
+                #'cmd_virtual': os.path.join(media_path, '0_d3dx9_redist/DXSETUP.exe'),
                 #'cmd_virtual': os.path.join(udisk_path, 'rtcw/Setup.exe'),
                 'cmd_virtual': os.path.join(wine_path, 'Return to Castle Wolfenstein/drive_c/Program Files (x86)/Return to Castle Wolfenstein/WolfSP.exe'),
             },
@@ -1627,8 +1648,6 @@ class admin(pylon.base.base):
     def admin_luks_container(self):
         # ====================================================================
         'access luks container via udisks2'
-        import sys
-        
         from PyQt5.QtWidgets import QApplication, QInputDialog, QLineEdit
         # application needed before any widget creation
         app = QApplication(sys.argv)
@@ -1714,19 +1733,13 @@ class admin(pylon.base.base):
     def admin_update(self):
         # ====================================================================
         'update portage'
-
-        # FIXME add emerge -pv @live-rebuild???
+        
+        import portage
         
         if self.ui.args.sync:
             self.ui.info('Synchronizing repositories...')
             self.dispatch('/usr/sbin/emaint sync -A',
                           output='stderr')
-            
-            # - automatically push result of successful rebase only on diablo (origin remote uses ssh protocol)
-            # - push all local branches (pull requests!) not only master
-            if self.ui.hostname == 'diablo':
-                self.dispatch('cd /usr/portage && /usr/bin/git push origin',
-                              output='stderr')
             self.dispatch('/usr/bin/eix-update',
                           output='stderr')
         
