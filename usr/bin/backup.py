@@ -17,6 +17,18 @@ transfer_engines = (
 
 tasks = {
     'diablo': (
+        # BTRFS restore from total online failure
+        # - restore any snapshot, does not need to be latest
+        #   btrfs send <root_date> | btrfs receive <online>
+        # - create a new writeable root (old root_date does not need to be child of root, -p will recognize it a as correct ref during next auto backup)
+        #   btrfs sub snap <root_date> <root>
+        # - backup script should take it from here => ensure with dry_run
+        #   at least this has been test manually
+        #   btrfs sub snap -r <root> <root_now>
+        #   btrfs send -p <root_date> <root_now> | btrfs receive <offline>
+        # - offline & external are not related => always restore from external, even if offline has survived, otherwise external reflinks are lost.
+        #   manually apply external <->  latest-offline diff to new root, then simply restart incremental backups on offline
+        
         ('diablo',
          '/mnt/work/backup/online/diablo',
          '/mnt/work/backup/online',
@@ -31,7 +43,7 @@ tasks = {
         ('diablo_external',
          '/mnt/work/backup/online/diablo',
          '/run/media/schweizer/external',
-         'btrfs', '1h15y4'), # add hour interval to allow easy manual refresh at any time
+         'btrfs', 'a15y4'), # add hour interval to allow easy manual refresh at any time
 
         #('/mnt/video/',
         # '/tmp/backup/video/unison/',

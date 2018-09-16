@@ -17,6 +17,8 @@ NOTES
    or otherwise the automatic extraction of incremental snapshot directory fails
   
 FIXME
+ - now using -p instead of -c to support correct parent lookup when restarting backup flow after restore
+   there should only ever be one reference for not same_fs case, right?
  - automatic creation of diablo link to latest (writeable) backup snapshot on offline/external array
  - try to stretch timeline, so to avoid deleting many interesting snapshot increments when booting up after a long downtime
    - if !newest timedelta slot contains 0 timestamps => shift ts_now slightly before next ts found in ts_recv_list
@@ -61,6 +63,9 @@ class backup_btrfs(pylon.base.base):
         return datetime.datetime.today().replace(microsecond=0)
     
     def get_td(self, delta_str):
+        # take a snapshot every time
+        if 'a' in delta_str:
+            yield datetime.timedelta(seconds=1)
         if 'h' in delta_str:
             num = int(re.search('([0-9]*)h', delta_str).group(1))
             for delta in pylon.unique_logspace(num, 24):
@@ -212,7 +217,7 @@ class backup_btrfs(pylon.base.base):
                         # assemble string of clones timestamp paths
                         clone_str = ''
                         for clone in ts_of_clones:
-                            clone_str += ' -c ' + self.get_path_of_ts(send_dir, task, clone)
+                            clone_str += ' -p ' + self.get_path_of_ts(send_dir, task, clone)
 
                         # transfer reference snapshot and any reflink relations
                         self.ui.info('Cloning to {0}...'.format(recv_path))
