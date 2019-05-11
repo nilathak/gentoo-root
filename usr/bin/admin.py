@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 '''script collection for system administration
 '''
+import json
 import os
 import pylon.base
 import pylon.gentoo.job
@@ -19,10 +20,8 @@ class ui(pylon.gentoo.ui.ui):
         self.parser_check_repos.add_argument('-l', '--list_files', action='store_true')
         self.parser_check_repos.add_argument('-r', '--rebase', action='store_true')
         self.parser_games.add_argument('-c', '--cfg', action='store_true')
-        self.parser_kernel.add_argument('--no-backup', action='store_true', help='do not overwrite keyring content with backup')
         self.parser_kernel.add_argument('-s', '--small', action='store_true', help='skip rsync of large ISOs')
         self.parser_update.add_argument('-s', '--sync', action='store_true')
-        self.parser_update.add_argument('-t', '--tree', action='store_true')
         self.parser_wine.add_argument('-c', '--cfg', action='store_true')
         self.parser_wrap.add_argument('-s', '--sync', action='store_true', help='sync to device')
 
@@ -42,7 +41,6 @@ class admin(pylon.base.base):
     def admin_check_audio(self):
         # ====================================================================
         'check audio metadata (low bitrates, ...)'
-        import json
         
         dir_exceptions = (
             '.stfolder',
@@ -121,45 +119,35 @@ class admin(pylon.base.base):
             self.ui.info('Final usage stats for {0}...'.format(label))
             self.dispatch('/sbin/btrfs fi usage ' + mp,
                           passive=True)
-            
-        for label,config in btrfs_config[self.ui.hostname].items():
-            if not self.ui.args.options or label in self.ui.args.options.split(','):
-                self.dispatch(job, label=label, config=config,
-                              blocking=False)
-        self.join()
 
-        # - FIXME perform periodic defrag after "Defrag/mostly OK/extents get unshared" is completely fixed (https://btrfs.wiki.kernel.org/index.php/Status)
-        # - FIXME some paths are not escaped correctly
-        btrfs_filefrag_roots = {
-            'diablo': (
-                '/home',
-                #'/',
-                #'/mnt/games',
-                #'/mnt/video',
-            ),
-            'belial': (
-                '/',
-            ),
-        }
+        # FIXME re-enable!!!!!!
+        #for label,config in btrfs_config[self.ui.hostname].items():
+        #    if not self.ui.args.options or label in self.ui.args.options.split(','):
+        #        self.dispatch(job, label=label, config=config,
+        #                      blocking=False)
+        #self.join()
+
+        import shlex
+        
+        def iwalk(walk):
+            for root, dirs, files in os.walk(walk, onerror=lambda x: self.ui.error(str(x))):
+                [dirs.remove(d) for d in list(dirs) if os.path.ismount(os.path.join(root, d))]
+                yield from (shlex.quote(os.path.join(root, f)) for f in files if os.path.isfile(os.path.join(root, f)))
+
+        def defrag_job(chunk):
+            for l in self.dispatch('/usr/sbin/filefrag {0}'.format(' '.join(list(chunk))),
+                                   output=None).stdout:
+                match = extent_pattern.search(l)
+                if match:
+                    self.ui.warning(match.string)
+                
+        # FIXME filefrag accepts multiple file => try chunking and compare speed
+        # FIXME perform periodic defrag after "Defrag/mostly OK/extents get unshared" is completely fixed (https://btrfs.wiki.kernel.org/index.php/Status)
         extent_pattern = re.compile(' [0-9]{3,} extent')
-        #for r in btrfs_filefrag_roots[self.ui.hostname]:
-        #    for root, dirs, files in os.walk(r, onerror=lambda x: self.ui.error(str(x))):
-        #        for d in list(dirs):
-        #            path = os.path.join(root, d)
-        #            if os.path.ismount(path):
-        #                dirs.remove(d)
-        #        for f in files:
-        #            path = os.path.join(root, f).replace('$','\$')
-        #            try:
-        #                output = self.dispatch('/usr/sbin/filefrag "{0}"'.format(path),
-        #                                       output=None).stdout
-        #                if output:
-        #                    match = extent_pattern.search(output[0])
-        #                    if match:
-        #                        self.ui.warning(match.string)
-        #            except self.exc_class:
-        #                self.ui.error('filefrag failed for {0}'.format(path))
-
+        for chunk in pylon.chunk(100, iwalk('/')):
+            self.dispatch(defrag_job, chunk=chunk,
+                          blocking=False)
+                
     @pylon.log_exec_time
     def admin_check_docs(self):
         # ====================================================================
@@ -296,7 +284,7 @@ class admin(pylon.base.base):
         #   find /mnt/images/ -type f | grep '\.JPG$' | sed 's/\(.*\)JPG/mv "\1JPG" "\1jpg"/'
         allowed_global = re.compile('a^')
         allowed = {
-            'audio': re.compile('\.flac$|\.mp3$|\.ogg$|cover\.(jpg|png)$'),
+            'audio': re.compile('\.flac$|\.mp3$|\.ogg$|cover\.jpg$'),
             
             'docs': re.compile('$|'.join([
                 # ebooks
@@ -327,7 +315,7 @@ class admin(pylon.base.base):
                 '/(0_helga|health)/.*\.(iso|jpg)',
                 # imports that should stay as-is
                 '/education/thesis/cdrom/docs/Priest.html',
-                '/hardware/digital/verification.*/labs/.*',
+                '/hardware/verification.*/labs/.*',
                 '/software/highlevel/0_hsse00_sen.*\.txt',
                 '/systems/communication/hsse00_nat_exercises/hsse00_nat_exercise06/nrec_viterbi\.dll',
                 '/systems/dsp/noiseshaping/hk_mash/.*',
@@ -335,7 +323,7 @@ class admin(pylon.base.base):
                 '/systems/.*\.(raw|sfk|wav)',
                 
                 # exclude obscure file formats from university tools
-                '/hardware/digital/design/0_hsse00_.*\.(txd|ass)', # PROL16 files
+                '/hardware/design/0_hsse00_.*\.(txd|ass)', # PROL16 files
                 '/hardware/layout/0_hsse00_res5/.*', # layout exercises
                 '/software/lowlevel/0_hsse00_sen3/.*Makefile.*', # AVR makefiles
                 '/software/lowlevel/0_hsse00_tin.*', # assembler exercises
@@ -353,7 +341,7 @@ class admin(pylon.base.base):
                 # compressed
                 'jpg',
                 # camera videos
-                'avi','mov','mpg',
+                'avi','mov','mp4','mpg',
             ]) + '$'),
             
             'video': re.compile('\.' + '$|\.'.join([
@@ -403,312 +391,215 @@ class admin(pylon.base.base):
         'check image metadata (silently convert to xmp)'
 
         # FIXME
-        # - digikam even needed compared to gwenview? searching for dupes, camera download
-        # - consistently apply date & geotag metadata => best search possibilites (or remove gps data to allow easy publication)
-        #   - delete geotagging metadata? identify incriminating XMP metadata and remove?
-        # - exiftool file renaming
-        #   - do I still need this command?: exiftool -r -P '-FileName<ModifyDate' -d %Y-%m-%d_%H-%M-%S%%-c.%%e <file>
-        #   - report wrong file name format?
-        #   - usecase for automatic renaming flow: /mnt/images/pets/stanz/IMG_0006.JPG
-        # - rotation
-        #   - automatic rotation by exiftool? rotated in other tools, eg pets_stanz_2010-09-24_15-43-59.JPG
-        #   - report wrong rotation in xmp metadata
-        # - rating supported by xmp & digikam?
-        #
-        # MANUAL FIX QUICK REFERENCE
-        # - add xmp standard caption for digikam viewing
-        #   exiftool -P -overwrite_original -xmp:Description="caption for digikam" <file>
-        # - change creation date
-        #   exiftool -P -overwrite_original -xmp:CreateDate="1990:02:01 00:00:00" <file>
-        # - check for any existing EXIF / IPTC / XMP metadata
-        #   exiftool -a -G1 * | grep -v ExifTool | grep -v System | grep -v File | grep -v Composite | grep -v PNG | grep -v =======
-        #
-        # LAST BAAL REPORT
-        ### adm_misc(2014-03-04 21:58:32,261) WARNING: Missing CreateDate tag for: /mnt/images/lindner/simone/simone4.jpg
-        ### adm_misc(2014-03-04 21:58:32,780) WARNING: Missing CreateDate tag for: /mnt/images/lindner/simone/italien8.jpg
-        ### adm_misc(2014-03-04 21:58:35,002) WARNING: Missing CreateDate tag for: /mnt/images/lindner/simone/simone2.jpg
-        ### adm_misc(2014-03-04 21:59:34,790) WARNING: Missing CreateDate tag for: /mnt/images/lindner/anna/anna1.jpg
-        ### adm_misc(2014-03-04 21:59:35,584) WARNING: Missing CreateDate tag for: /mnt/images/lindner/anna/italien9.jpg
-        ### adm_misc(2014-03-04 21:59:36,197) WARNING: Missing CreateDate tag for: /mnt/images/lindner/anna/anna6.jpg
-        ### adm_misc(2014-03-04 21:59:38,030) WARNING: Missing CreateDate tag for: /mnt/images/lindner/anna/anna8.jpg
-        ### adm_misc(2014-03-04 21:59:45,940) WARNING: Missing CreateDate tag for: /mnt/images/lindner/anna/anna9.jpg
-        ### adm_misc(2014-03-04 21:59:48,680) WARNING: Missing CreateDate tag for: /mnt/images/lindner/anna/anna4.jpg
-        ### adm_misc(2014-03-04 21:59:51,295) WARNING: Missing CreateDate tag for: /mnt/images/lindner/anna/anna3.jpg
-        ### adm_misc(2014-03-04 21:59:53,939) WARNING: Missing CreateDate tag for: /mnt/images/lindner/anna/anna2.jpg
-        ### adm_misc(2014-03-04 21:59:59,167) WARNING: Missing CreateDate tag for: /mnt/images/lindner/anna/anna7.jpg
-        ### adm_misc(2014-03-04 22:00:04,550) WARNING: Missing CreateDate tag for: /mnt/images/lindner/anna/anna5.jpg
-        ### adm_misc(2014-03-04 22:00:09,937) WARNING: Missing CreateDate tag for: /mnt/images/lindner/anna/italien2.jpg
-        ### adm_misc(2014-03-04 22:00:20,463) WARNING: Missing CreateDate tag for: /mnt/images/lindner/anna/matura/DSCF1302.JPG
-        ### adm_misc(2014-03-04 22:00:23,070) WARNING: Missing CreateDate tag for: /mnt/images/lindner/anna/matura/DSCF1311.JPG
-        ### adm_misc(2014-03-04 22:00:25,473) WARNING: Missing CreateDate tag for: /mnt/images/lindner/anna/matura/DSCF1298.JPG
-        ### adm_misc(2014-03-04 22:00:33,522) WARNING: Missing CreateDate tag for: /mnt/images/lindner/anna/matura/DSCF1294.JPG
-        ### adm_misc(2014-03-04 22:13:48,287) WARNING: Missing CreateDate tag for: /mnt/images/trips/2006.09 totes gebirge/stÃ¶gi/eTag1_Hinterstoder_Prielschutzhaus.jpg
-        ### adm_misc(2014-03-04 22:13:53,006) WARNING: Missing CreateDate tag for: /mnt/images/trips/2006.09 totes gebirge/stÃ¶gi/eTag2_Prielschutzhaus_PÃ¼hringerhÃ¼tte.jpg
-        ### adm_misc(2014-03-04 22:14:58,860) WARNING: Missing CreateDate tag for: /mnt/images/trips/2006.09 totes gebirge/stÃ¶gi/eTag4_Appelhaus_LoserhÃ¼tte.jpg
-        ### adm_misc(2014-03-04 22:15:01,396) WARNING: Missing CreateDate tag for: /mnt/images/trips/2006.09 totes gebirge/stÃ¶gi/Karte2_small.jpg
-        ### adm_misc(2014-03-04 22:15:46,621) WARNING: Missing CreateDate tag for: /mnt/images/trips/2006.09 totes gebirge/stÃ¶gi/eTag5_LoserhÃ¼tte_Tauplitzalm.jpg
-        ### adm_misc(2014-03-04 22:15:55,202) WARNING: Missing CreateDate tag for: /mnt/images/trips/2006.09 totes gebirge/stÃ¶gi/eTag3_PÃ¼hringerhÃ¼tte_Appelhaus.jpg
-        ### adm_misc(2014-03-04 22:15:58,156) WARNING: Missing CreateDate tag for: /mnt/images/trips/2006.09 totes gebirge/stÃ¶gi/eTag6_Tauplitz_Hinterstoder.jpg
-        ### adm_misc(2014-03-04 22:21:42,672) WARNING: Missing CreateDate tag for: /mnt/images/trips/2006.09 totes gebirge/deix/060909-TotesGeb_16-p.jpg
-        ### adm_misc(2014-03-04 22:41:03,411) WARNING: Missing CreateDate tag for: /mnt/images/events/2010 mitterecker/DSCF0331.AVI
-        ### adm_misc(2014-03-04 22:41:54,198) WARNING: Missing CreateDate tag for: /mnt/images/events/2010 traktortreffen/DSCF0151.AVI
-        ### adm_misc(2014-03-04 22:43:47,196) WARNING: Missing CreateDate tag for: /mnt/images/events/2004 christmas/2004-12-26_15-07-33.jpg
-        ### adm_misc(2014-03-04 22:43:49,343) WARNING: Missing CreateDate tag for: /mnt/images/events/2004 christmas/2004-12-26_15-05-34.jpg
-        ### adm_misc(2014-03-04 22:43:51,796) WARNING: Missing CreateDate tag for: /mnt/images/events/2004 christmas/2004-12-26_15-09-12.jpg
-        ### adm_misc(2014-03-04 22:43:54,370) WARNING: Missing CreateDate tag for: /mnt/images/events/2004 christmas/2004-12-26_15-10-27.jpg
-        ### adm_misc(2014-03-04 22:43:57,158) WARNING: Missing CreateDate tag for: /mnt/images/events/2004 christmas/2004-12-26_15-06-25.jpg
-        ### adm_misc(2014-03-04 22:43:59,752) WARNING: Missing CreateDate tag for: /mnt/images/events/2004 christmas/2004-12-26_15-07-22.jpg
-        ### adm_misc(2014-03-04 22:44:02,403) WARNING: Missing CreateDate tag for: /mnt/images/events/2004 christmas/2004-12-26_15-08-51.jpg
-        ### adm_misc(2014-03-04 22:44:04,646) WARNING: Missing CreateDate tag for: /mnt/images/events/2004 christmas/2004-12-26_15-13-04.jpg
-        ### adm_misc(2014-03-04 22:44:07,304) WARNING: Missing CreateDate tag for: /mnt/images/events/2004 christmas/2004-12-26_15-07-05.jpg
-        ### adm_misc(2014-03-04 22:44:09,843) WARNING: Missing CreateDate tag for: /mnt/images/events/2004 christmas/2004-12-26_15-07-49.jpg
-        ### adm_misc(2014-03-04 22:44:12,495) WARNING: Missing CreateDate tag for: /mnt/images/events/2004 christmas/2004-12-26_15-11-31.jpg
-        ### adm_misc(2014-03-04 22:44:15,024) WARNING: Missing CreateDate tag for: /mnt/images/events/2004 christmas/2004-12-26_15-09-35.jpg
-        ### adm_misc(2014-03-04 22:44:17,717) WARNING: Missing CreateDate tag for: /mnt/images/events/2004 christmas/2004-12-26_15-12-45.jpg
-        ### adm_misc(2014-03-04 22:44:20,433) WARNING: Missing CreateDate tag for: /mnt/images/events/2004 christmas/2004-12-26_15-20-26.jpg
-        ### adm_misc(2014-03-04 22:44:22,967) WARNING: Missing CreateDate tag for: /mnt/images/events/2004 christmas/2004-12-26_15-13-17.jpg
-        ### adm_misc(2014-03-04 22:44:25,539) WARNING: Missing CreateDate tag for: /mnt/images/events/2004 christmas/2004-12-26_15-04-54.jpg
-        ### adm_misc(2014-03-04 22:44:27,606) WARNING: Missing CreateDate tag for: /mnt/images/events/2004 christmas/2004-12-26_15-11-21.jpg
-        ### adm_misc(2014-03-04 22:44:29,980) WARNING: Missing CreateDate tag for: /mnt/images/events/2004 christmas/2004-12-26_15-12-23.jpg
-        ### adm_misc(2014-03-04 22:44:32,654) WARNING: Missing CreateDate tag for: /mnt/images/events/2004 christmas/2004-12-26_15-09-23.jpg
-        ### adm_misc(2014-03-04 22:44:35,205) WARNING: Missing CreateDate tag for: /mnt/images/events/2004 christmas/2004-12-26_15-12-12.jpg
-        ### adm_misc(2014-03-04 22:44:37,646) WARNING: Missing CreateDate tag for: /mnt/images/events/2004 christmas/2004-12-26_15-11-42.jpg
-        ### adm_misc(2014-03-04 22:44:40,285) WARNING: Missing CreateDate tag for: /mnt/images/events/2004 christmas/2004-12-26_15-06-48.jpg
-        ### adm_misc(2014-03-04 22:44:42,885) WARNING: Missing CreateDate tag for: /mnt/images/events/2004 christmas/2004-12-26_15-08-33.jpg
-        ### adm_misc(2014-03-04 22:44:45,421) WARNING: Missing CreateDate tag for: /mnt/images/events/2004 christmas/2004-12-26_15-11-59.jpg
-        ### adm_misc(2014-03-04 22:44:47,413) WARNING: Missing CreateDate tag for: /mnt/images/events/2004 christmas/2004-12-26_15-08-15.jpg
-        ### adm_misc(2014-03-04 22:44:50,099) WARNING: Missing CreateDate tag for: /mnt/images/events/2004 christmas/2004-12-26_15-10-04.jpg
-        ### adm_misc(2014-03-04 22:44:52,434) WARNING: Missing CreateDate tag for: /mnt/images/events/2004 christmas/2004-12-26_15-12-31.jpg
-        ### adm_misc(2014-03-04 22:51:39,509) WARNING: Missing CreateDate tag for: /mnt/images/paul/Paul's Vernisage, Kunst & Krempel.mpg
-        ### adm_misc(2014-03-04 22:51:40,012) WARNING: Missing CreateDate tag for: /mnt/images/paul/paul2.jpg
-        ### adm_misc(2014-03-04 22:51:52,780) WARNING: Missing CreateDate tag for: /mnt/images/paul/paul6.jpg
-        ### adm_misc(2014-03-04 22:51:52,972) WARNING: Missing CreateDate tag for: /mnt/images/paul/valentinstag2.jpg
-        ### adm_misc(2014-03-04 22:51:53,162) WARNING: Missing CreateDate tag for: /mnt/images/paul/paul.jpg
-        ### adm_misc(2014-03-04 22:51:54,823) WARNING: Missing CreateDate tag for: /mnt/images/paul/paul3.jpg
-        ### adm_misc(2014-03-04 22:51:56,563) WARNING: Missing CreateDate tag for: /mnt/images/paul/paul4.jpg
-        ### adm_misc(2014-03-04 22:51:58,396) WARNING: Missing CreateDate tag for: /mnt/images/paul/paul5.jpg
-        ### adm_misc(2014-03-04 22:52:01,191) WARNING: Missing CreateDate tag for: /mnt/images/paul/valentinstag1.jpg
-        ### adm_misc(2014-03-04 22:52:01,389) WARNING: Missing CreateDate tag for: /mnt/images/paul/silvester8.jpg
-        ### adm_misc(2014-03-04 22:52:03,250) WARNING: Missing CreateDate tag for: /mnt/images/paul/paul 13x18x2.jpg
-        ### adm_misc(2014-03-04 22:52:03,482) WARNING: Missing CreateDate tag for: /mnt/images/paul/paul1.jpg
-        ### adm_misc(2014-03-04 22:52:04,508) WARNING: Missing CreateDate tag for: /mnt/images/paul/paul7.jpg
-        ### adm_misc(2014-03-04 22:52:05,390) WARNING: Missing CreateDate tag for: /mnt/images/paul/paul22.jpg
-        ### adm_misc(2014-03-04 22:52:11,432) WARNING: Missing CreateDate tag for: /mnt/images/paul/wald/wald1.jpg
-        ### adm_misc(2014-03-04 22:52:12,119) WARNING: Missing CreateDate tag for: /mnt/images/paul/wald/wald8.jpg
-        ### adm_misc(2014-03-04 22:52:12,316) WARNING: Missing CreateDate tag for: /mnt/images/paul/wald/wald2.jpg
-        ### adm_misc(2014-03-04 22:52:12,508) WARNING: Missing CreateDate tag for: /mnt/images/paul/wald/wald14.jpg
-        ### adm_misc(2014-03-04 22:52:13,905) WARNING: Missing CreateDate tag for: /mnt/images/paul/wald/platz4 13x18.jpg
-        ### adm_misc(2014-03-04 22:52:14,300) WARNING: Missing CreateDate tag for: /mnt/images/paul/wald/wald7.jpg
-        ### adm_misc(2014-03-04 22:52:15,111) WARNING: Missing CreateDate tag for: /mnt/images/paul/wald/wald6.jpg
-        ### adm_misc(2014-03-04 22:52:17,187) WARNING: Missing CreateDate tag for: /mnt/images/paul/wald/wald12.jpg
-        ### adm_misc(2014-03-04 22:52:24,172) WARNING: Missing CreateDate tag for: /mnt/images/paul/wald/wald10.jpg
-        ### adm_misc(2014-03-04 22:52:24,361) WARNING: Missing CreateDate tag for: /mnt/images/paul/wald/platz1 13x18.jpg
-        ### adm_misc(2014-03-04 22:52:24,561) WARNING: Missing CreateDate tag for: /mnt/images/paul/wald/wald11.jpg
-        ### adm_misc(2014-03-04 22:52:24,761) WARNING: Missing CreateDate tag for: /mnt/images/paul/wald/platz5 13x18.jpg
-        ### adm_misc(2014-03-04 22:52:25,155) WARNING: Missing CreateDate tag for: /mnt/images/paul/wald/wald4.jpg
-        ### adm_misc(2014-03-04 22:52:25,551) WARNING: Missing CreateDate tag for: /mnt/images/paul/wald/wald3.jpg
-        ### adm_misc(2014-03-04 22:52:35,268) WARNING: Missing CreateDate tag for: /mnt/images/paul/wald/tor1 13x18.jpg
-        ### adm_misc(2014-03-04 22:52:37,954) WARNING: Missing CreateDate tag for: /mnt/images/paul/wald/wald16.jpg
-        ### adm_misc(2014-03-04 22:52:40,259) WARNING: Missing CreateDate tag for: /mnt/images/paul/wald/wald18.jpg
-        ### adm_misc(2014-03-04 22:52:40,450) WARNING: Missing CreateDate tag for: /mnt/images/paul/wald/platz3 13x18.jpg
-        ### adm_misc(2014-03-04 22:52:40,658) WARNING: Missing CreateDate tag for: /mnt/images/paul/wald/wald17.jpg
-        ### adm_misc(2014-03-04 22:52:41,454) WARNING: Missing CreateDate tag for: /mnt/images/paul/wald/wald15.jpg
-        ### adm_misc(2014-03-04 22:52:41,859) WARNING: Missing CreateDate tag for: /mnt/images/paul/wald/platz2 13x18.jpg
-        ### adm_misc(2014-03-04 22:52:42,550) WARNING: Missing CreateDate tag for: /mnt/images/paul/wald/wald5.jpg
-        ### adm_misc(2014-03-04 22:52:45,280) WARNING: Missing CreateDate tag for: /mnt/images/paul/wald/wald13.jpg
-        ### adm_misc(2014-03-04 22:52:47,880) WARNING: Missing CreateDate tag for: /mnt/images/paul/wald/tor2 13x18.jpg
-        ### adm_misc(2014-03-04 22:52:56,635) WARNING: Missing CreateDate tag for: /mnt/images/paul/wald/wald9.jpg
-        ### adm_misc(2014-03-04 22:53:19,469) WARNING: Missing CreateDate tag for: /mnt/images/paul/wald/approved/platz3 13x18.jpg
-        ### adm_misc(2014-03-04 22:53:39,311) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/DSCF0963.JPG
-        ### adm_misc(2014-03-04 22:53:54,605) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/DSCF1205.JPG
-        ### adm_misc(2014-03-04 22:53:59,380) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/DSCF1256.JPG
-        ### adm_misc(2014-03-04 22:54:11,363) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/DSCF1240.JPG
-        ### adm_misc(2014-03-04 22:54:13,596) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/DSCF1044.JPG
-        ### adm_misc(2014-03-04 22:54:42,012) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/DSCF1125.JPG
-        ### adm_misc(2014-03-04 22:55:18,252) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/DSCF0991.JPG
-        ### adm_misc(2014-03-04 22:55:22,606) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/DSCF1139.JPG
-        ### adm_misc(2014-03-04 22:55:23,867) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/video/DSCF1165.AVI
-        ### adm_misc(2014-03-04 22:55:24,249) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/video/DSCF1064.AVI
-        ### adm_misc(2014-03-04 22:55:24,511) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/video/DSCF1177.AVI
-        ### adm_misc(2014-03-04 22:55:24,781) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/video/DSCF1081.AVI
-        ### adm_misc(2014-03-04 22:55:25,039) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/video/DSCF1141.AVI
-        ### adm_misc(2014-03-04 22:55:25,287) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/video/DSCF1111.AVI
-        ### adm_misc(2014-03-04 22:55:25,502) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/video/DSCF1168.AVI
-        ### adm_misc(2014-03-04 22:55:25,820) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/video/DSCF1073.AVI
-        ### adm_misc(2014-03-04 22:55:26,076) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/video/DSCF1231.AVI
-        ### adm_misc(2014-03-04 22:55:26,347) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/video/DSCF1116.AVI
-        ### adm_misc(2014-03-04 22:55:26,616) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/video/DSCF1192.AVI
-        ### adm_misc(2014-03-04 22:55:26,876) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/video/DSCF1148.AVI
-        ### adm_misc(2014-03-04 22:55:27,192) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/video/DSCF1069.AVI
-        ### adm_misc(2014-03-04 22:55:27,469) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/video/DSCF1109.AVI
-        ### adm_misc(2014-03-04 22:55:27,736) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/video/DSCF1066.AVI
-        ### adm_misc(2014-03-04 22:55:28,026) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/video/DSCF1172.AVI
-        ### adm_misc(2014-03-04 22:55:28,261) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/video/DSCF1175.AVI
-        ### adm_misc(2014-03-04 22:55:28,490) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/video/DSCF1174.AVI
-        ### adm_misc(2014-03-04 22:55:28,731) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/video/DSCF1095.AVI
-        ### adm_misc(2014-03-04 22:55:29,038) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/video/DSCF1179.AVI
-        ### adm_misc(2014-03-04 22:55:29,265) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/video/DSCF1147.AVI
-        ### adm_misc(2014-03-04 22:55:29,534) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/video/DSCF1170.AVI
-        ### adm_misc(2014-03-04 22:55:29,768) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/video/DSCF1222.AVI
-        ### adm_misc(2014-03-04 22:55:30,056) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/video/DSCF1071.AVI
-        ### adm_misc(2014-03-04 22:55:30,290) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/video/DSCF1128.AVI
-        ### adm_misc(2014-03-04 22:55:30,528) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/video/DSCF1074.AVI
-        ### adm_misc(2014-03-04 22:55:30,838) WARNING: Missing CreateDate tag for: /mnt/images/paul/2012.06 england/video/DSCF1134.AVI
-        ### adm_misc(2014-03-04 22:57:22,332) WARNING: Missing CreateDate tag for: /mnt/images/hannes/erstkommunion/Kommunion Hannes.mpg
-        ### adm_misc(2014-03-04 23:18:59,730) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080626_AP_461.jpg
-        ### adm_misc(2014-03-04 23:19:02,373) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080626_AP_439.jpg
-        ### adm_misc(2014-03-04 23:19:05,095) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/Krumau_Hauptplatz.jpg
-        ### adm_misc(2014-03-04 23:19:07,813) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/Krumau_Blick_von_der_Burg_2.jpg
-        ### adm_misc(2014-03-04 23:19:10,432) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080626_AP_463.jpg
-        ### adm_misc(2014-03-04 23:19:12,964) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080626_AP_426.jpg
-        ### adm_misc(2014-03-04 23:19:15,793) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_540.jpg
-        ### adm_misc(2014-03-04 23:19:18,386) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080626_AP_434.jpg
-        ### adm_misc(2014-03-04 23:19:20,910) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_484.jpg
-        ### adm_misc(2014-03-04 23:19:23,733) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080626_AP_436.jpg
-        ### adm_misc(2014-03-04 23:19:26,227) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080626_AP_407.jpg
-        ### adm_misc(2014-03-04 23:19:28,881) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_590.jpg
-        ### adm_misc(2014-03-04 23:19:31,603) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_480.jpg
-        ### adm_misc(2014-03-04 23:19:34,259) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/Krumau_Burg.jpg
-        ### adm_misc(2014-03-04 23:19:36,984) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/Krumau_GrandHotel.jpg
-        ### adm_misc(2014-03-04 23:19:39,394) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080626_AP_416.jpg
-        ### adm_misc(2014-03-04 23:19:42,175) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_498.jpg
-        ### adm_misc(2014-03-04 23:19:45,005) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/Krumau_Blick_von_der_Burg_1.jpg
-        ### adm_misc(2014-03-04 23:19:47,645) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080626_AP_406.jpg
-        ### adm_misc(2014-03-04 23:19:50,214) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_603.jpg
-        ### adm_misc(2014-03-04 23:19:53,075) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_490.jpg
-        ### adm_misc(2014-03-04 23:19:55,704) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080626_AP_443.jpg
-        ### adm_misc(2014-03-04 23:19:58,283) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080626_AP_444.jpg
-        ### adm_misc(2014-03-04 23:20:01,146) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/Krumau_Schlosshof.jpg
-        ### adm_misc(2014-03-04 23:20:03,876) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_464.jpg
-        ### adm_misc(2014-03-04 23:20:06,525) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_605.jpg
-        ### adm_misc(2014-03-04 23:20:09,369) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/Krumau_2.jpg
-        ### adm_misc(2014-03-04 23:20:12,153) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_596.jpg
-        ### adm_misc(2014-03-04 23:20:14,666) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_548.jpg
-        ### adm_misc(2014-03-04 23:20:17,198) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_542.jpg
-        ### adm_misc(2014-03-04 23:20:20,080) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/DSC_6251_3D.JPG
-        ### adm_misc(2014-03-04 23:20:22,839) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_501.jpg
-        ### adm_misc(2014-03-04 23:20:25,432) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_593.jpg
-        ### adm_misc(2014-03-04 23:20:28,036) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_532.jpg
-        ### adm_misc(2014-03-04 23:20:30,690) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080626_AP_462.jpg
-        ### adm_misc(2014-03-04 23:20:33,392) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/Krumau_1.jpg
-        ### adm_misc(2014-03-04 23:20:36,211) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_567.jpg
-        ### adm_misc(2014-03-04 23:20:38,869) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_537.jpg
-        ### adm_misc(2014-03-04 23:20:41,408) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_488.jpg
-        ### adm_misc(2014-03-04 23:20:43,949) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080626_AP_449.jpg
-        ### adm_misc(2014-03-04 23:20:46,434) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_547.jpg
-        ### adm_misc(2014-03-04 23:20:49,201) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_482.jpg
-        ### adm_misc(2014-03-04 23:20:51,645) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_534.jpg
-        ### adm_misc(2014-03-04 23:20:54,603) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080626_AP_452.jpg
-        ### adm_misc(2014-03-04 23:20:57,270) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_599.jpg
-        ### adm_misc(2014-03-04 23:21:00,155) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_594.jpg
-        ### adm_misc(2014-03-04 23:21:02,981) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_524.jpg
-        ### adm_misc(2014-03-04 23:21:05,670) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_522.jpg
-        ### adm_misc(2014-03-04 23:21:08,387) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_467.jpg
-        ### adm_misc(2014-03-04 23:21:11,108) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_602.jpg
-        ### adm_misc(2014-03-04 23:21:13,692) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_533.jpg
-        ### adm_misc(2014-03-04 23:21:16,443) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_591.jpg
-        ### adm_misc(2014-03-04 23:21:19,161) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080626_AP_435.jpg
-        ### adm_misc(2014-03-04 23:21:22,017) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080626_AP_425.jpg
-        ### adm_misc(2014-03-04 23:21:24,903) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_601.jpg
-        ### adm_misc(2014-03-04 23:21:27,665) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2008.06 company outing/Andreas Puerstinger/20080627_AP_544.jpg
-        ### adm_misc(2014-03-04 23:34:48,008) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2005.09 company outing/Stitch.jpg
-        ### adm_misc(2014-03-04 23:37:00,157) WARNING: Missing CreateDate tag for: /mnt/images/hannes/dice/2005.09 company outing/IMG_0350.jpg
-        ### adm_misc(2014-03-04 23:45:16,656) WARNING: Missing CreateDate tag for: /mnt/images/hannes/school/maturaball/Matura Hannes.mpg
-        ### adm_misc(2014-03-04 23:52:21,968) WARNING: Missing CreateDate tag for: /mnt/images/hannes/school/diplomreise/DSC00225_.JPG
-        ### adm_misc(2014-03-05 00:00:56,192) WARNING: Missing CreateDate tag for: /mnt/images/helga/verwandtschaft/thomas/Matura Thomas.mpg
-        ### adm_misc(2014-03-05 00:01:07,489) WARNING: Missing CreateDate tag for: /mnt/images/helga/helga/silvester9.jpg
-        ### adm_misc(2014-03-05 00:01:07,714) WARNING: Missing CreateDate tag for: /mnt/images/helga/helga/traudi2.jpg
-        ### adm_misc(2014-03-05 00:01:22,561) WARNING: Missing CreateDate tag for: /mnt/images/helga/helga/italien3.jpg
-        ### adm_misc(2014-03-05 00:01:30,386) WARNING: Missing CreateDate tag for: /mnt/images/helga/helga/goisererhtte3.jpg
-        ### adm_misc(2014-03-05 00:01:38,455) WARNING: Missing CreateDate tag for: /mnt/images/helga/helga/silvester10.jpg
-        ### adm_misc(2014-03-05 00:01:40,946) WARNING: Missing CreateDate tag for: /mnt/images/helga/helga/snowboard2.jpg
-        ### adm_misc(2014-03-05 00:01:59,426) WARNING: Missing CreateDate tag for: /mnt/images/helga/helga/goisererhtte2.jpg
-        ### adm_misc(2014-03-05 00:02:07,472) WARNING: Missing CreateDate tag for: /mnt/images/helga/helga/goisererhtte1.jpg
-        ### adm_misc(2014-03-05 00:02:33,812) WARNING: Missing CreateDate tag for: /mnt/images/helga/helga/snowboard1.jpg
-        ### adm_misc(2014-03-05 00:02:36,900) WARNING: Missing CreateDate tag for: /mnt/images/helga/helga/italien6.jpg
-        ### adm_misc(2014-03-05 00:02:39,213) WARNING: Missing CreateDate tag for: /mnt/images/helga/helga/helga 13x18x2.jpg
-        ### adm_misc(2014-03-05 00:02:48,878) WARNING: Missing CreateDate tag for: /mnt/images/helga/helga/snowboard3.jpg
-        ### adm_misc(2014-03-05 00:04:29,468) WARNING: Missing CreateDate tag for: /mnt/images/helga/birthdays/DSCF1330.JPG
-        ### adm_misc(2014-03-05 00:10:44,198) WARNING: Missing CreateDate tag for: /mnt/images/pets/stanz/stanz_2004-02-14_002.jpg
-        ### adm_misc(2014-03-05 00:10:53,696) WARNING: Missing CreateDate tag for: /mnt/images/pets/stanz/stanz_2004-02-14_016.jpg
-        ### adm_misc(2014-03-05 00:11:08,649) WARNING: Missing CreateDate tag for: /mnt/images/pets/stanz/stanz_2004-01-22_008.jpg
-        ### adm_misc(2014-03-05 00:11:13,934) WARNING: Missing CreateDate tag for: /mnt/images/pets/stanz/stanz_2004-02-14_014.jpg
-        ### adm_misc(2014-03-05 00:11:16,396) WARNING: Missing CreateDate tag for: /mnt/images/pets/stanz/stanz_2004-01-22_007.jpg
-        ### adm_misc(2014-03-05 00:11:27,038) WARNING: Missing CreateDate tag for: /mnt/images/pets/stanz/stanz_2004-02-14_013.jpg
-        ### adm_misc(2014-03-05 00:11:40,605) WARNING: Missing CreateDate tag for: /mnt/images/pets/stanz/stanz_2004-01-22_006.jpg
-        ### adm_misc(2014-03-05 00:12:17,134) WARNING: Missing CreateDate tag for: /mnt/images/pets/stanz/stanz_2003-01-04_009.jpg
-        ### adm_misc(2014-03-05 00:12:24,856) WARNING: Missing CreateDate tag for: /mnt/images/pets/stanz/stanz_2003-01-04_001.jpg
-        ### adm_misc(2014-03-05 00:12:38,012) WARNING: Missing CreateDate tag for: /mnt/images/pets/stanz/stanz_2004-02-14_004.jpg
-        ### adm_misc(2014-03-05 00:12:58,895) WARNING: Missing CreateDate tag for: /mnt/images/pets/stanz/stanz_2004-02-14_015.jpg
-        ### adm_misc(2014-03-05 00:13:22,249) WARNING: Missing CreateDate tag for: /mnt/images/pets/stanz/stanz_2004-02-14_003.jpg
-        ### adm_misc(2014-03-05 00:13:48,517) WARNING: Missing CreateDate tag for: /mnt/images/pets/stanz/stanz_2004-12-26_010.jpg
-        ### adm_misc(2014-03-05 00:13:57,345) WARNING: Missing CreateDate tag for: /mnt/images/pets/stanz/stanz_2004-01-24_005.jpg
-        #self.ui.warning('DISABLED until properly implemented!')
-        #return
+        # - search for dupes in digikam, after sorting is complete
+        # - search for images with usercomment/description/title/rating, ensure no garbage is included (even without the invalid encoding error)
+        # - ensure all viewers can play videos
+        # - cut rome videos, normalize sound at least
+        # - whatsapp profile foto
+        # - find ../../johann*/ -type f | grep -i img
 
-        # - convert existing metadata to xmp, while deleting all
-        #   metadata which cannot be converted to xmp.
-        # - repair broken metadata structures
-        #self.dispatch('exiftool -q -r -P -overwrite_original -all= "-all>xmp:all" "{0}"'.format(walk))
+        # basic ideas
+        # - exclude external web pics, restrict to JPG files
+        # - convert original EXIF to XMP tags, delete EXIF and any other metadata format afterwards
+        # - if EXIF/XMP need to be updated synchronously => use MWG tags 
+        #   https://sno.phy.queensu.ca/~phil/exiftool/TagNames/MWG.html
+        #   ensure viewer apps support at least mwg:description and mwg:rating
+        # - rename all files based on mwg:createdate => basic sorting mode for all viewer apps
+        #   - even ok for scanned images, as the order in which they were scanned is often the chronological order in the paper album
+        #   - if known, manually change createdate of scanned images to actual date of paper pic
+        #   - use filemodifydate for video files, dont play around with video metadata
 
-        # - renaming for scanned images:
-        #   rename files according to creationdate -> even ok for
-        #   scanned pics, as the order in which they were scanned is
-        #   often the chronological order in the paper album
-        #   - change filename according to createdate or modifydate
-        #     (they should be the same at this stage)
-        #   - manually change createdate to actual date of paper
-        #     picture if necessary
-        # - renaming for camera images:
-        #   - change filename according to createdate
-        #   - if there are pics without a createdate:
-        #     exiftool -r -P -overwrite_original '-FileModifyDate>xmp:CreateDate' <file>
+        # manual import flow
+        # - create new folder or copy into existing (extension will be converted to lower case automatically)
+        # - run check_images with -o <folder>
+        # - fix invalid createdate, run check_images again
+        # - remove invalid tags
+        # - optional: add description & rating (digikam: caption, f-stop gallery: details->edit description)
         
+        # EXIFTOOL MANUAL FLOW QUICK REFERENCE
+        # - add standard caption
+        #   digikam: displayed and nice editor (configurable write-back to EXIF/XMP)
+        #   gwenview: displayed, field needs to be enabled, FIXME enable correct fields after globally removing EXIF
+        #   f-stop gallery: displayed, writes to XMP.dc.description, XMP.xmp.rating
+        #   exiftool <common_args> -mwg:description="string" <file>
+        # - change creation date
+        #   exiftool <common_args> -mwg:createdate="1990:02:01 00:00:00" <file>
+        #   exiftool <common_args> -createdate+="0:1:1 00:00:00" <file> (add 1 month, 1 day)
+        # - problematic tags
+        #   - Warning: Invalid EXIF text encoding for
+        #     exiftool <common_args> -usercomment= <files>
+        #   - Warning: [minor] Error reading PreviewImage from file
+        #     exiftool <common_args> -previewimage= <files>
+        #   - Unknown metadata "APP14"
+        #     the JPEG APP14 "Adobe" group is not removed by default with "-All=" because it may affect the appearance of the image.
+        #     exiftool <common_args> -Adobe:All= <files>
+        #   - get rid of problematic EXIF/XMP tags by rebuilding metadata
+        #     exiftool <common_args> -all= -tagsfromfile @ -all:all -unsafe -icc_profile <files>
+       
         dir_exceptions = (
-            '/mnt/images/[a-s]',
-            '/mnt/images/[u-z]',
             '/mnt/images/0_sort',
-            #'/mnt/images/cuteness',
-            #'/mnt/images/design',
-            #'/mnt/images/fun',
+            '/mnt/images/cartoons',
+            '/mnt/images/cuteness',
+            '/mnt/images/design',
+            '/mnt/images/fun',
         )
         file_exceptions = (
-            '.stignore',
         )
         walk = self.ui.args.options or '/mnt/images'
 
-        metadata = dict()
+        all_files = set()
         for root, dirs, files in os.walk(walk, onerror=lambda x: self.ui.error(str(x))):
             [dirs.remove(d) for d in list(dirs) for x in dir_exceptions if re.search(x, os.path.join(root, d))]
             [dirs.remove(d) for d in list(dirs) if os.path.ismount(os.path.join(root, d))]
-            #[files.remove(f) for f in list(files) for x in file_exceptions if re.search(x, os.path.join(root, f))]
-            combined_regex = re.compile('|'.join(file_exceptions))
-            abs_paths = (os.path.join(root, x) for x in files)
-            excl_paths = (x for x in abs_paths if not re.search(combined_regex, x))
-            quoted_paths = ['"{0}"'.format(path) for path in excl_paths]
-            if quoted_paths:
-                out = self.dispatch('/usr/bin/exiftool -Orientation {0}'.format(' '.join(quoted_paths)),
-                                    output=None).stdout
-                orientation_tags = out[1::2]
-                metadata.update(zip(excl_paths, orientation_tags))
-        print(metadata)
-            #while(self.chunk(10, excl_paths)):
-            #    out = self.dispatch('/usr/bin/exiftool -Orientation {0}'.format(' '.join(excl_paths)),
-            #                        output=None).stdout
-            #        if len()out:
-            #            self.ui.warning('No orientation flag: {0}'.format(path))
-            #        elif 'normal' not in out[0]:
-            #            self.ui.info('{0} {1}'.format(out, path))
+            [files.remove(f) for f in list(files) for x in file_exceptions if re.search(x, os.path.join(root, f))]
+            all_files.update(os.path.join(root, x) for x in files)
 
-            #for d in dirs:
-            #    dir_from_album_root = os.path.join(root, d).replace(walk, '').strip('/')
-            #    dir_wo_metachars = dir_from_album_root.replace('/', '_').replace(' ', '_')
-            #    self.dispatch('/usr/bin/exiftool -q -P "-FileName<CreateDate" -d "{0}_%%Y-%%m-%%d_%%H-%%M-%%S%%%%-c.%%%%e" "{1}"'.format(dir_wo_metachars, os.path.join(root, d)))
-            ## check for missing CreateDate tag
-            #for f in files:
-            #    if len(self.dispatch('/usr/bin/exiftool -CreateDate "{0}"'.format(os.path.join(root, f)),
-            #                         None).stdout) == 0:
-            #        self.ui.warning('Missing CreateDate tag for: ' + os.path.join(root, f))
+        image_extensions = re.compile('\.' + '$|\.'.join([
+                'jpg',
+            ]) + '$')
+        video_extensions = re.compile('\.' + '$|\.'.join([
+                'avi','mov','mp4','mpg',
+            ]) + '$')
+        image_files = set(x for x in all_files if image_extensions.search(x, re.IGNORECASE))
+        video_files = set(x for x in all_files if video_extensions.search(x, re.IGNORECASE))
+        for unknown in (all_files - image_files - video_files):
+            self.ui.warning('Unknown file type detected: "{0}"'.format(unknown))
+
+        # ignore minor errors and downgrade them warnings ([minor])
+        common_args = '-duplicates -ignoreMinorErrors -overwrite_original -preserve -quiet'
+        
+        known_metadata = (
+            'exif',
+            'makernotes', # leave it, will overlay with EXIF/XMP but more camera info might be interesting
+            'xmp',
+        )
+        obsolete_metadata = (
+            'exiftool',   # no real tags
+            'file',       # no real tags
+            'flashpix',   # obsolete
+            'iptc',       # concentrate on EXIF/XMP
+            'jfif',       # obsolete
+            'mpf',        # obsolete
+            'printim',    # obsolete
+            'sourcefile', # no real tags
+        )
+        unwanted_tags = (
+            'gps:all',      # strip all GPS info
+            'xmp:geotag',   # not covered by gps tag
+            'mwg:keywords', # used for tagging, which I'll never use
+            'xmp:keywords', # not covered by MWG tag
+        )
+        suspicious_xmp_tags = (
+            'ImageDescription', # coming from EXIF, should be removed since xmp.dc.description is used in viewers
+            'Title',            # not used in viewers
+        )
+        def excl_tags_str(tags):
+            return ' '.join('--{0}:all'.format(x) for x in tags)
+        def delete_tags_str(tags):
+            return ' '.join('-{0}='.format(x) for x in tags)
+        def quoted_paths_str(paths):
+            return ' '.join('"{0}"'.format(x) for x in paths)
+        def rename_common(chunk, images):
+            rename_dict = dict()
+            date_source = 'mwg:createdate' if images else 'filemodifydate'
+            for f in chunk:
+                key = os.path.abspath(os.path.dirname(f)).replace('/mnt/images/', '')
+                rename_dict.setdefault(key, list()).append(f)
+            for k in rename_dict.keys():
+                # FIXME used for quick manual chronological sorting of scanned images, remove afterwards
+                if self.ui.args.force:
+                    self.dispatch('/usr/bin/exiftool {0} "-mwg:createdate<filename" -d "{1}_%Y-%m-%d_%H-%M-%S%%-c.%%le" {2}'.format(
+                        common_args,
+                        k.replace(os.sep, '_').replace(' ', '_'),
+                        quoted_paths_str(rename_dict[k])))
+                else:
+                    self.dispatch('/usr/bin/exiftool {0} "-filename<{3}" -d "{1}_%Y-%m-%d_%H-%M-%S%%-c.%%le" {2}'.format(
+                        common_args,
+                        k.replace(os.sep, '_').replace(' ', '_'),
+                        quoted_paths_str(rename_dict[k]),
+                        date_source))
+        
+        def image_job(chunk):
+            self.ui.info('Performing metadata sanity checks...')
+            out = self.dispatch('/usr/bin/exiftool -e -g -j -n -u {0} {1} {2}'.format(
+                common_args,
+                excl_tags_str(obsolete_metadata),
+                quoted_paths_str(chunk)),
+                                output=None, passive=True).stdout
+            chunk_exif = list()
+            for file_dict in json.loads(os.linesep.join(out)):
+                fix_date = True
+                for k in file_dict.keys():
+                    if k == 'EXIF':
+                        chunk_exif.append(file_dict['SourceFile'])
+                    if k == 'EXIF' or k == 'XMP':
+                        if 'CreateDate' in file_dict[k]:
+                            fix_date = False
+                    if k == 'XMP':
+                        for tag in suspicious_xmp_tags:
+                            if tag in file_dict[k]:
+                                self.ui.warning('Suspicious tag "{0}" detected in "{1}"'.format(tag, file_dict['SourceFile']))
+                    if k.lower() not in (known_metadata + obsolete_metadata):
+                        self.ui.warning('Unknown metadata "{0}" detected in "{1}"'.format(k, file_dict['SourceFile']))
+                if fix_date:
+                    self.ui.warning('Fixing missing "CreateDate" tag in "{0}"'.format(file_dict['SourceFile']))
+                    self.dispatch('/usr/bin/exiftool {0} "-mwg:createdate<filemodifydate" "{1}"'.format(
+                        common_args,
+                        file_dict['SourceFile']))
+                        
+            self.ui.info('Deleting unknown metadata structures...')
+            self.dispatch('/usr/bin/exiftool -all= {0} {1} {2}'.format(
+                common_args,
+                excl_tags_str(known_metadata),
+                quoted_paths_str(chunk)))
+
+            if chunk_exif:
+                self.ui.info('Migrating EXIF to XMP...')
+                self.dispatch('/usr/bin/exiftool  -@ /usr/share/exiftool/arg_files/exif2xmp.args {0} {1}'.format(
+                    common_args,
+                    quoted_paths_str(chunk_exif)),
+                              
+                              # files with incompletely migratable EXIF will report on stderr 'Warning: No writable tags set from'
+                              # usually not a problem, eg written by digikam during rating
+                              output='stdout')
+                
+                self.ui.info('Deleting EXIF...')
+                self.dispatch('/usr/bin/exiftool -exif:all= {0} {1}'.format(
+                    common_args,
+                    quoted_paths_str(chunk_exif)))
+
+            self.ui.info('Removing specific metadata tags...')
+            # - cannot be combined with previous exiftool calls: "Once excluded from the output, a tag may not be re-included by a subsequent option"
+            self.dispatch('/usr/bin/exiftool {0} {1} {2}'.format(
+                common_args,
+                delete_tags_str(unwanted_tags),
+                quoted_paths_str(chunk)))
+
+            self.ui.info('Renaming files...')
+            rename_common(chunk, True)
+            
+            # FIXME rotation handling
+            # - report wrong rotation via mwg:orientation
+            # - automatic rotation by exiftool? rotated in other tools, eg pets_stanz_2010-09-24_15-43-59.JPG
+            # - check whether orientation flag is missing, what's the output of imagemagick then?
+            #out = self.dispatch('/usr/bin/exiftool -Orientation {0}'.format(' '.join(quoted_paths)),
+            #                    output=None).stdout
+            #orientation_tags = out[1::2]
+            #metadata.update(zip(abs_paths, orientation_tags))
+            #print(list(v for k,v in metadata.items() if not re.search('normal', v)))
+
+        def video_job(chunk):
+            self.ui.info('Renaming video files...')
+            rename_common(chunk, False)
+            
+        # process file list in chunks to avoid: Argument list is too long
+        for chunk in pylon.chunk(100, image_files):
+            self.dispatch(image_job, chunk=chunk,
+                          blocking=False)
+        for chunk in pylon.chunk(100, video_files):
+            self.dispatch(video_job, chunk=chunk,
+                          blocking=False)
+        self.join()
 
     @pylon.log_exec_time
     def admin_check_network(self):
@@ -770,54 +661,59 @@ class admin(pylon.base.base):
     @pylon.log_exec_time
     def admin_check_permissions(self):
         # ====================================================================
-        'check and apply access rights on system & user data paths'
+        'check and apply access rights on system & user data'
+        import itertools
         import stat
+
+        # uid, gid, dirmask, filemask
+        perm_dict = {
+            'users_rw':  (1000, 100, 0o770, 0o660),
+            'users_r':   (1000, 100, 0o750, 0o640),
+            'schweizer': (1000, 100, 0o700, 0o600),
+        }
+
+        # tuple is reversed for matching
+        perm_tree = (
+            ('/mnt/audio',                 'users_r'),
+            ('/mnt/audio/0_sort',          'users_rw'),
+            ('/mnt/docs',                  'users_r'),
+            ('/mnt/docs/.*',               'schweizer'),
+            ('/mnt/docs/0_calibre',        'users_r'),
+            ('/mnt/docs/0_sort',           'users_rw'),
+            ('/mnt/games',                 'users_r'),
+            ('/mnt/games/0_sort',          'users_rw'),
+            ('/mnt/games/dos/.*',          'users_rw'), # other users => saving games
+            ('/mnt/games/linux',           None),       # could be users_r when exec permissions are retained
+            ('/mnt/games/snes',            'users_rw'),
+            ('/mnt/games/wine',            None),       # could be users_rw when exec permissions are retained
+            ('/mnt/images',                'users_r'),
+            ('/mnt/images/0_sort',         'users_rw'),
+            ('/mnt/video',                 'users_r'),
+            ('/mnt/video/0_sort',          'users_rw'),
+            ('/mnt/video/porn',            'schweizer'),
+            ('/mnt/work',                  'schweizer'),
+            ('/mnt/work/.*',               None),       # problematic for github repos and software executables (parent dir permission locks all anyway)
+        )
+
+        def set_perm(path, perm_key, mask_idx):
+            perms = perm_dict[perm_key]
+            if self.ui.args.dry_run:
+                self.ui.debug(f'{perm_key:>10} {path}')
+            else:
+                os.chown(path, perms[0], perms[1])
+                os.chmod(path, perms[mask_idx])
+
+        self.ui.info('Setting filesystem permissions...')
+        for root, dirs, files in os.walk('/mnt', onerror=lambda x: self.ui.error(str(x))):
+            [dirs.remove(d) for d in list(dirs) for x,y in reversed(perm_tree) if re.search(x, os.path.join(root, d)) and not y]
+            [dirs.remove(d) for d in list(dirs) if os.path.ismount(os.path.join(root, d))]
+         
+            for path in itertools.chain(zip(dirs, itertools.repeat(2)), zip(files, itertools.repeat(3))):
+                for branch, perm_key in reversed(perm_tree):
+                    if re.search(branch, os.path.join(root, path[0])):
+                        set_perm(os.path.join(root, path[0]), perm_key, path[1])
+                        break
         
-        def set_perm(path, owner, group, mask):
-            os.chown(path, owner, group)
-            os.chmod(path, mask)
-
-        def set_perms(tree,
-                      owner=1000,  # schweizer
-                      group=100,   # users
-                      dirmask=0o750,
-                      filemask=0o640):
-            dir_exceptions = (
-                '/mnt/games/linux', # avoid stripping exec permissions
-                '/mnt/games/wine', # avoid stripping exec permissions
-                )
-            file_exceptions = (
-                )
-            for root, dirs, files in os.walk(tree, onerror=lambda x: self.ui.error(str(x))):
-                [dirs.remove(d) for d in list(dirs) for x in dir_exceptions if re.search(x, os.path.join(root, d))]
-                [dirs.remove(d) for d in list(dirs) if os.path.ismount(os.path.join(root, d))]
-                [files.remove(f) for f in list(files) for x in file_exceptions if re.search(x, os.path.join(root, f))]
-                if not self.ui.args.dry_run:
-                    [set_perm(os.path.join(root, d), owner, group, dirmask) for d in dirs]
-                    [set_perm(os.path.join(root, f), owner, group, filemask) for f in files]
-        
-        public = (
-            '/mnt/audio',
-            '/mnt/games',
-            '/mnt/video',
-            )
-        self.ui.info('Setting rights for public data...')
-        for p in public:
-            self.dispatch(set_perms, tree=p,
-                          blocking=False)
-        self.join()
-
-        private = (
-            '/mnt/docs',
-            '/mnt/images',
-            #'/mnt/work', just dont, otherwise new git repos will show a complete diff
-            )
-        self.ui.info('Setting rights for private data...')
-        for p in private:
-            self.dispatch(set_perms, tree=p, dirmask=0o700, filemask=0o600,
-                          blocking=False)
-        self.join()
-
         self.ui.info('Checking for inconsistent passwd/group files (fix with pwck & grpck)...')
         try:
             self.dispatch('/usr/sbin/pwck -qr')
@@ -830,7 +726,7 @@ class admin(pylon.base.base):
                 
         self.ui.info('Checking for sane system file permissions...')
         dir_exceptions = (
-            '/home/schweizer/.local', # try to include as much from home as possible
+            '/home',
             '/mnt',
             '/var',
             )
@@ -859,7 +755,7 @@ class admin(pylon.base.base):
                         if (os.stat(file).st_nlink > 1):
                             # someone may try to retain older versions of binaries, eg avoiding security fixes
                             self.ui.warning('Found suid/sgid file with multiple links: ' + file)
-                except Exception as e:
+                except FileNotFoundError:
                     # dead links are reported by cruft anyway
                     pass
                         
@@ -879,7 +775,7 @@ class admin(pylon.base.base):
         build_times.sort(key = operator.itemgetter(1), reverse=True)
         not_rebuilt_since = [x for x in build_times if time.time() - x[1] > 3600*24*365]
         if not_rebuilt_since:
-            self.ui.warning('{0} packages have not been compiled for 6 months!'.format(len(not_rebuilt_since)))
+            self.ui.warning('{0} packages have not been compiled for 1 year!'.format(len(not_rebuilt_since)))
             for x in not_rebuilt_since:
                 self.ui.ext_info('{0} - {1}'.format(time.ctime(x[1]), x[0]))
 
@@ -934,6 +830,7 @@ class admin(pylon.base.base):
         import gentoolkit.equery.check
         import gentoolkit.helpers
         import portage
+        git_url = 'https://github.com/nilathak/gentoo-root.git'
         gtk_check = gentoolkit.equery.check.VerifyContents()
         gtk_find = gentoolkit.helpers.FileOwner()
         trees = portage.create_trees()
@@ -1001,16 +898,11 @@ class admin(pylon.base.base):
                     # export master changes to avoid checking out master branch instead of host branch
                     # ensure https protocol is used for origin on non-diablo hosts
                     if host_files:
-                        url = self.dispatch(git_cmd + 'config --get remote.origin.url',
-                                            output=None, passive=True).stdout[0]
-                        clone_path = '/tmp/' + os.path.basename(url)
+                        clone_path = '/tmp/' + os.path.basename(git_url)
                         self.ui.info('Preparing temporary master repo for {0} into {1}...'.format(repo, clone_path))
-                        try:
-                            self.dispatch('/bin/rm -rf {0}'.format(clone_path))
-                            self.dispatch(git_cmd + 'clone {0} {1}'.format(url, clone_path),
-                                          output='stdout')
-                        except self.exc_class:
-                            pass
+                        self.dispatch('/bin/rm -rf {0}'.format(clone_path))
+                        self.dispatch(git_cmd + 'clone {0} {1}'.format(git_url, clone_path),
+                                      output='stderr')
                         for f in master_files:
                             self.dispatch('/bin/cp {0} {1}'.format(os.path.join(repo, f),
                                                               os.path.join(clone_path, f)),
@@ -1193,13 +1085,19 @@ class admin(pylon.base.base):
                 'cmd': os.path.join(wine_path, 'Deponia/drive_c/GOG Games/Deponia/deponia.exe'),
             },
             # FIXME menu is broken, but gameplay is fine: https://bugs.winehq.org/show_bug.cgi?id=2082
+            #'WINE_diablo': {
+            #    'prefix': os.path.join(wine_path, 'Diablo'),
+            #    'media': [os.path.join(media_path, 'rpg/Diablo/Diablo.iso')],
+            #    #'cmd_virtual': os.path.join(udisk_path, 'DIABLO/setup.exe'),
+            #    #'cmd_virtual': os.path.join(media_path, 'rpg/Diablo/drtl109.exe'),
+            #    'cmd': os.path.join(wine_path, 'Diablo/drive_c/Diablo/diablo.exe'),
+            #    'res': '"640x480"',
+            #},
+            # FIXME try GOG version (hi-res?)
             'WINE_diablo': {
                 'prefix': os.path.join(wine_path, 'Diablo'),
-                'media': [os.path.join(media_path, 'rpg/Diablo/Diablo.iso')],
-                #'cmd_virtual': os.path.join(udisk_path, 'DIABLO/setup.exe'),
-                #'cmd_virtual': os.path.join(media_path, 'rpg/Diablo/drtl109.exe'),
-                'cmd': os.path.join(wine_path, 'Diablo/drive_c/Diablo/diablo.exe'),
-                'res': '"640x480"',
+                #'cmd_virtual': os.path.join(media_path, 'rpg/Diablo/setup_diablo_1.09_v6_(28378).exe'),
+                'cmd_virtual': os.path.join(wine_path, 'Diablo/drive_c/GOG Games/Diablo/dx/DiabloLauncher.exe'),
             },
             # Key d2: HGMH - 228E - 7X2K - 2867
             # Key ld: H2DV - 66PE - 8DT9 - D4KW
@@ -1605,34 +1503,32 @@ class admin(pylon.base.base):
 
         self.ui.info('install grub modules + embed into boot sector')
         self.dispatch('/usr/sbin/grub-install {0} --boot-directory={1}/boot'.format(dev, key_mp))
-        if not self.ui.args.no_backup:
-            self.ui.info('rsync new grub installation to keyring backup')
-            self.dispatch('/usr/bin/rsync -a {0}/boot/grub/ {1}/boot/grub/ --exclude="grub.cfg"'.format(key_mp, key_image),
-                          output='both')
+        self.ui.info('rsync new grub installation to keyring backup')
+        self.dispatch('/usr/bin/rsync -a {0}/boot/grub/ {1}/boot/grub/ --exclude="grub.cfg"'.format(key_mp, key_image),
+                      output='both')
         self.ui.info('install host-specific grub.cfg (grub detects underlying device and correctly uses absolute paths to kernel images)')
         self.dispatch('/usr/sbin/grub-mkconfig -o /boot/grub/grub.cfg')
 
-        if not self.ui.args.no_backup:
-            self.ui.info('rsync keyring backup to actual device')
-            rsync_exclude = [
-                # kernels & grub.cfgs
-                '--exclude="/diablo"',
-            ]
-            rsync_exclude_small = [
-                '--include="/systemrescuecd*.iso"',
-                '--exclude="/*.iso"',
-            ]
-            if self.ui.args.small:
-                rsync_exclude += rsync_exclude_small 
-            dry_run = ''
-            if not self.ui.args.force:
-                self.ui.info('Use -f to apply sync!')
-                dry_run = 'n'
-            self.dispatch('/usr/bin/rsync -av{3} --modify-window 1 --no-perms --no-owner --no-group --inplace --delete {0}/ {1} {2}'.format(key_image,
-                                                                                                                                            key_mp,
-                                                                                                                                            ' '.join(rsync_exclude),
-                                                                                                                                            dry_run),
-                          output='both')
+        self.ui.info('rsync keyring backup to actual device')
+        rsync_exclude = [
+            # kernels & grub.cfgs
+            '--exclude="/diablo"',
+        ]
+        rsync_exclude_small = [
+            '--include="/systemrescuecd*.iso"',
+            '--exclude="/*.iso"',
+        ]
+        if self.ui.args.small:
+            rsync_exclude += rsync_exclude_small 
+        dry_run = ''
+        if not self.ui.args.force:
+            self.ui.info('Use -f to apply sync!')
+            dry_run = 'n'
+        self.dispatch('/usr/bin/rsync -av{3} --modify-window 1 --no-perms --no-owner --no-group --inplace --delete {0}/ {1} {2}'.format(key_image,
+                                                                                                                                        key_mp,
+                                                                                                                                        ' '.join(rsync_exclude),
+                                                                                                                                        dry_run),
+                      output='both')
 
         try:
             while True:
@@ -1645,60 +1541,38 @@ class admin(pylon.base.base):
         self.dispatch('/usr/bin/make modules_install')
         self.dispatch('/usr/bin/emerge @module-rebuild', output='nopipes')
 
-    def admin_luks_container(self):
+    def admin_open_vault(self):
         # ====================================================================
-        'access luks container via udisks2'
-        from PyQt5.QtWidgets import QApplication, QInputDialog, QLineEdit
+        'open encrypted vault'
+        from PyQt5.QtWidgets import QApplication, QInputDialog, QLineEdit, QMessageBox
         # application needed before any widget creation
         app = QApplication(sys.argv)
 
-        # import supported on diablo only
-        import dbus
+        vault = '/mnt/work/vault'
+        mp = '/tmp/vault'
+
+        try:
+            os.mkdir(mp)
+        except FileExistsError:
+            pass
         
-        bus = dbus.SystemBus()
-        udisks2_manager_obj = bus.get_object('org.freedesktop.UDisks2', '/org/freedesktop/UDisks2/Manager')
-
-        with open('/mnt/work/luks/container', 'r+b') as container:
-            udisks2_manager = dbus.Interface(udisks2_manager_obj, 'org.freedesktop.UDisks2.Manager')
-            loop_obj_path = udisks2_manager.LoopSetup(container.fileno(), {})
+        while(True):
+            passphrase, ok_event = QInputDialog.getText(None, 'Decryption', 'Passphrase', QLineEdit.Password)
+            if not ok_event:
+                break
             try:
-                loop_obj = bus.get_object('org.freedesktop.UDisks2', loop_obj_path)
-                loop = dbus.Interface(loop_obj, 'org.freedesktop.UDisks2.Encrypted')
-                retry = True
-                valid = False
-
-                while(retry):
-                    passphrase, retry = QInputDialog.getText(None, 'Decryption', 'Passphrase', QLineEdit.Password)
-                    if retry:
-                        try:
-                            decrypt_obj_path = loop.Unlock(passphrase, {})
-                            retry = False
-                            valid = True
-                        except dbus.exceptions.DBusException:
-                            pass
-                if valid:
-                    try:
-                        decrypt_obj = bus.get_object('org.freedesktop.UDisks2', decrypt_obj_path)
-                        decrypt_uuid = decrypt_obj.Get('org.freedesktop.UDisks2.Block', 'IdUUID', dbus_interface='org.freedesktop.DBus.Properties')
-                        decrypt_device = self.dispatch('/sbin/findfs UUID=' + decrypt_uuid,
-                                                       output=None, passive=True).stdout[0]
-                        # udisks now automatically mounts unlocked loopdevice => unmount for fs check
-                        decrypt = dbus.Interface(decrypt_obj, 'org.freedesktop.UDisks2.Filesystem')
-                        decrypt.Unmount({})
-                        try:
-                            self.dispatch('/sbin/fsck.ext3 -fp ' + decrypt_device, output=None)
-                        except Exception as e:
-                            self.ui.error(e)
-                            time.sleep(10)
-                        mount_path = decrypt.Mount({})
-                        self.dispatch('/usr/bin/dolphin ' + mount_path, output=None)
-                        decrypt.Unmount({})
-                    finally:
-                        loop.Lock({})
+                self.dispatch(f'echo {passphrase} | gocryptfs -noprealloc {vault} {mp}', output=None)
+            except self.exc_class as e:
+                QMessageBox.critical(None, 'Error', f'gocryptfs error code {e.owner.ret_val}')
+                continue
+            try:
+                self.dispatch(f'/usr/bin/dolphin {mp}', output=None)
+                self.dispatch(f'fusermount -u {mp}', output=None)
+            except self.exc_class:
+                QMessageBox.critical(None, 'Error', 'displaying folder or unmounting failed')
             finally:
-                loop = dbus.Interface(loop_obj, 'org.freedesktop.UDisks2.Loop')
-                loop.Delete({})
-
+                break
+                        
     def admin_spindown(self):
         # ====================================================================
         'force offline HDD array into standby mode'
@@ -1742,13 +1616,27 @@ class admin(pylon.base.base):
                           output='stderr')
             self.dispatch('/usr/bin/eix-update',
                           output='stderr')
+            
+            self.ui.info('Updating KDE repo keyword file links...')
+            etc_keywords = '/etc/portage/package.keywords'
+            kde_nowarn = '/etc/portage/package.nowarn/kde'
+            kde_keywords = '/var/db/repos/kde/Documentation/package.keywords'
+            kde_keywords_files = [x.path for x in os.scandir(kde_keywords) if not 'live' in x.name and x.is_file()]
+            with open(kde_nowarn, 'w') as kde_nowarn_f:
+                for group in ('kde-applications', 'kde-frameworks', 'kde-plasma'):
+                    for old_link in (x.path for x in os.scandir(etc_keywords) if group in x.name):
+                        os.remove(old_link)
+                    latest_path = sorted(x for x in kde_keywords_files if group in x)[-1]
+                    with open(latest_path, 'r') as latest_path_f:
+                        for l in latest_path_f:
+                            kde_nowarn_f.write('{0} in_keywords no_change{1}'.format(l.rstrip(os.linesep), os.linesep))
+                    os.symlink(latest_path, os.path.join(etc_keywords, os.path.basename(latest_path)))
         
         self.ui.info('Checking for updates...')
         try:
-            self.dispatch('{0} {1} {2} {3}'.format(
-                '/usr/bin/emerge --nospinner --keep-going -uDNv world',
+            self.dispatch('{0} {1} {2}'.format(
+                '/usr/bin/emerge --nospinner -uDNv world',
                 '-p' if not self.ui.args.force else '',
-                '-t' if self.ui.args.tree else '',
                 self.ui.args.options if self.ui.args.options else ''),
                           output='nopipes')
         except self.exc_class:
@@ -1805,7 +1693,7 @@ class admin(pylon.base.base):
             '--exclude="/run/"',
             '--exclude="/sys/"',
             '--exclude="/tmp/"',
-            '--exclude="/var/lib/dhcpcd/dhcpcd-wlan0-arreat.lease"',
+            '--exclude="/var/lib/dhcpcd/"',
             '--exclude="/var/lib/openntpd/ntpd.drift"',
             '--exclude="/var/lib/postfix/master.lock"',
             '--exclude="/var/lib/syslog-ng/syslog-ng.persist"',
