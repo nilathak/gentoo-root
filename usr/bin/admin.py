@@ -1054,21 +1054,22 @@ class admin(pylon.base.base):
                           output='stderr')
             self.dispatch('/usr/bin/eix-update',
                           output='stderr')
-            
-            self.ui.info('Updating KDE repo keyword file links...')
-            etc_keywords = '/etc/portage/package.keywords'
-            kde_nowarn = '/etc/portage/package.nowarn/kde'
-            kde_keywords = '/var/db/repos/kde/Documentation/package.keywords'
-            kde_keywords_files = [x.path for x in os.scandir(kde_keywords) if not 'live' in x.name and x.is_file()]
-            with open(kde_nowarn, 'w') as kde_nowarn_f:
-                for group in ('kde-applications', 'kde-frameworks', 'kde-plasma'):
-                    for old_link in (x.path for x in os.scandir(etc_keywords) if group in x.name):
-                        os.remove(old_link)
-                    latest_path = sorted(x for x in kde_keywords_files if group in x)[-1]
-                    with open(latest_path, 'r') as latest_path_f:
-                        for l in latest_path_f:
-                            kde_nowarn_f.write(f'{l.rstrip(os.linesep)} in_keywords no_change{os.linesep}')
-                    os.symlink(latest_path, os.path.join(etc_keywords, os.path.basename(latest_path)))
+
+            if self.ui.hostname == 'diablo':
+                self.ui.info('Updating KDE repo keyword file links...')
+                etc_keywords = '/etc/portage/package.keywords'
+                kde_nowarn = '/etc/portage/package.nowarn/kde'
+                kde_keywords = '/var/db/repos/kde/Documentation/package.keywords'
+                kde_keywords_files = [x.path for x in os.scandir(kde_keywords) if not 'live' in x.name and x.is_file()]
+                with open(kde_nowarn, 'w') as kde_nowarn_f:
+                    for group in ('kde-applications', 'kde-frameworks', 'kde-plasma'):
+                        for old_link in (x.path for x in os.scandir(etc_keywords) if group in x.name):
+                            os.remove(old_link)
+                        latest_path = sorted(x for x in kde_keywords_files if group in x)[-1]
+                        with open(latest_path, 'r') as latest_path_f:
+                            for l in latest_path_f:
+                                kde_nowarn_f.write(f'{l.rstrip(os.linesep)} in_keywords no_change{os.linesep}')
+                        os.symlink(latest_path, os.path.join(etc_keywords, os.path.basename(latest_path)))
 
         pretend = '-p' if not self.ui.args.force else ''
         options = self.ui.args.options or ''
