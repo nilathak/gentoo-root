@@ -817,18 +817,8 @@ class admin(pylon.base.base):
 
             if self.ui.args.rebase:
                 self.ui.info(f'Rebasing repo at {repo}...')
-                self.dispatch(f'{git_cmd} stash',
-                              output='stderr')
                 self.dispatch(f'{git_cmd} pull --no-edit',
                               output='both')
-                try:
-                    self.dispatch(f'{git_cmd} --no-pager stash show',
-                                  output=None)
-                except self.exc_class:
-                    pass
-                else:
-                    self.dispatch(f'{git_cmd} stash pop',
-                                  output='stderr')
             else:
                 self.ui.info(f'######################### Checking repo at {repo}...')
 
