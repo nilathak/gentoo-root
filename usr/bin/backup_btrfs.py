@@ -221,7 +221,7 @@ class backup_btrfs(pylon.base.base):
 
                         # transfer reference snapshot and any reflink relations
                         self.ui.info('Cloning to {0}...'.format(recv_path))
-                        self.dispatch('/sbin/btrfs send -q {0} {1} | /sbin/btrfs receive {2}'.format(clone_str,
+                        self.dispatch('/usr/bin/ionice -c3 /sbin/btrfs send -q {0} {1} | /usr/bin/ionice -c3 /sbin/btrfs receive {2}'.format(clone_str,
                                                                                                      self.get_path_of_ts(send_dir, task, ts),
                                                                                                      recv_dir),
                                       output='stderr')
